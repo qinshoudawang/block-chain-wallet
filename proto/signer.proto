@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package signer;
+
+option go_package = "wallet-system/internal/signer;signer";
+
+service SignerService {
+  rpc SignTransaction(SignRequest) returns (SignResponse);
+}
+
+message SignRequest {
+  string request_id = 1;
+  string chain = 2;
+  string from_address = 3;
+  string to_address = 4;
+  string amount = 5;
+  bytes  unsigned_tx = 6;
+}
+
+message SignResponse {
+  string tx_hash = 1;
+  bytes  signed_tx = 2;
+}
