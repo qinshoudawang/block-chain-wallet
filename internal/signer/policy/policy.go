@@ -3,6 +3,7 @@ package policy
 import (
 	"errors"
 	"math/big"
+	"os"
 )
 
 type PolicyEngine struct {
@@ -14,7 +15,7 @@ func NewPolicyEngine() *PolicyEngine {
 	return &PolicyEngine{
 		MaxAmount: big.NewInt(1000000000000000000), // 1 ETH
 		WhiteList: map[string]bool{
-			"0x123...": true,
+			os.Getenv("TO_ADDRESS"): true,
 		},
 	}
 }

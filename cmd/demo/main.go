@@ -16,7 +16,12 @@ import (
 	"wallet-system/pkg/redisx"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/joho/godotenv"
 )
+
+func init() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+}
 
 func mustEnv(k string) string {
 	v := os.Getenv(k)
@@ -27,16 +32,19 @@ func mustEnv(k string) string {
 }
 
 func main() {
+	if err := godotenv.Load(".env"); err != nil && !os.IsNotExist(err) {
+		log.Fatalf("load .env failed: %v", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	ethRPC := mustEnv("ETH_RPC")
 	priv := mustEnv("HOT_WALLET_PRIV")
 	chainIDStr := mustEnv("ETH_CHAIN_ID")
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "127.0.0.1:6379"
-	}
+	redisAddr := mustEnv("REDIS_ADDR")
+	redisPass := mustEnv("REDIS_PASS")
+	redisDB := mustEnv("REDIS_DB")
 
 	chainID, ok := new(big.Int).SetString(chainIDStr, 10)
 	if !ok {
@@ -44,7 +52,7 @@ func main() {
 	}
 
 	// 1) Redis
-	rdc := redisx.New(redisAddr, "", 0)
+	rdc := redisx.New(redisAddr, redisPass, redisDB)
 	if err := rdc.Ping(ctx); err != nil {
 		log.Fatalf("redis ping failed: %v", err)
 	}
@@ -59,17 +67,16 @@ func main() {
 		log.Fatalf("sender init: %v", err)
 	}
 
-	// 3) Signer Provider (真实 EVM 签名)
+	// 3) Signer Provider
 	evmSigner, err := provider.NewEVMLocalSigner(priv, chainID)
 	if err != nil {
 		log.Fatalf("evm signer init: %v", err)
 	}
 
-	// 4) Signer Service（带 Redis 幂等 + nonce 锁 + policy）
+	// 4) Signer Service
 	svc := signer.NewGRPCServer(rdc.RDB, evmSigner)
 
-	// ======== 你要改的参数：from/to/amount =========
-	from := common.HexToAddress(mustEnv("FROM_ADDRESS")) // 必须和 priv 匹配
+	from := common.HexToAddress(mustEnv("FROM_ADDRESS")) // 和 priv 匹配
 	to := common.HexToAddress(mustEnv("TO_ADDRESS"))
 
 	// 发送 0.001 ETH（单位 wei）
@@ -103,5 +110,5 @@ func main() {
 		log.Fatalf("broadcast: %v", err)
 	}
 
-	fmt.Println("✅ sent tx:", txHash)
+	log.Println("✅ sent tx:", txHash)
 }
