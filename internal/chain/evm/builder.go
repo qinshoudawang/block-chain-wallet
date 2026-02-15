@@ -1,4 +1,4 @@
-package txbuilder
+package evm
 
 import (
 	"context"
@@ -14,12 +14,8 @@ type EVMBuilder struct {
 	cli *ethclient.Client
 }
 
-func NewEVMBuilder(rpc string) (*EVMBuilder, error) {
-	cli, err := ethclient.Dial(rpc)
-	if err != nil {
-		return nil, err
-	}
-	return &EVMBuilder{cli: cli}, nil
+func NewEVMBuilder(cli *ethclient.Client) *EVMBuilder {
+	return &EVMBuilder{cli: cli}
 }
 
 // 构造一个“未签名”的 EIP-1559 交易，并返回 RLP bytes
@@ -30,12 +26,8 @@ func (b *EVMBuilder) BuildUnsignedTx(
 	value *big.Int,
 	data []byte,
 	chainID *big.Int,
+	nonce uint64,
 ) ([]byte, error) {
-
-	nonce, err := b.cli.PendingNonceAt(ctx, from)
-	if err != nil {
-		return nil, err
-	}
 
 	tipCap, err := b.cli.SuggestGasTipCap(ctx)
 	if err != nil {

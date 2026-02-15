@@ -2,22 +2,36 @@ syntax = "proto3";
 
 package signer;
 
-option go_package = "wallet-system/internal/signer;signer";
+option go_package = "proto/signer;signer";
 
 service SignerService {
   rpc SignTransaction(SignRequest) returns (SignResponse);
 }
 
 message SignRequest {
+  // 幂等/防重放
   string request_id = 1;
-  string chain = 2;
-  string from_address = 3;
-  string to_address = 4;
-  string amount = 5;
-  bytes  unsigned_tx = 6;
+
+  // 业务单据（验真用）
+  string withdraw_id = 2;
+
+  // 链与资金要素（policy+验真用）
+  string chain = 3;
+  string from_address = 4;
+  string to_address = 5;
+  string amount = 6;       // wei, decimal string
+
+  // 交易载荷（Signer 只签这个，不构造）
+  bytes unsigned_tx = 7;   // RLP of unsigned tx (go-ethereum MarshalBinary)
+
+  // 授权验真（HMAC）
+  string auth_token = 8;   // hex(HMAC-SHA256)
+
+  // 可选：调用方身份（审计用）
+  string caller = 9;
 }
 
 message SignResponse {
-  string tx_hash = 1;
-  bytes  signed_tx = 2;
+  bytes signed_tx = 1;     // RLP of signed tx
+  string tx_hash = 2;      // optional: signer can compute after signing
 }
