@@ -3,6 +3,7 @@ package signer
 import (
 	"context"
 	"errors"
+	"log"
 	"math/big"
 	"time"
 
@@ -38,6 +39,7 @@ func NewService(rdb *redis.Client, p provider.SignerProvider, authSecret []byte)
 }
 
 func (s *Service) SignTransaction(ctx context.Context, req *signpb.SignRequest) (*signpb.SignResponse, error) {
+	log.Printf("[signer] handle request %s", req.RequestId)
 	// 1) 幂等/防重放（Redis）
 	ok, cached, err := s.guard.Begin(ctx, req.RequestId)
 	if err != nil && !errors.Is(err, idempotency.ErrDuplicateProcessing) {

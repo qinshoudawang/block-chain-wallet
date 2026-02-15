@@ -1,10 +1,19 @@
 package helpers
 
 import (
+	"log"
 	"math/big"
 	"os"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
+
+func init() {
+	if err := godotenv.Load(".env"); err != nil && !os.IsNotExist(err) {
+		log.Fatalf("load .env failed: %v", err)
+	}
+}
 
 func Getenv(k, def string) string {
 	v := os.Getenv(k)

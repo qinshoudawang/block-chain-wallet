@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"math/big"
-	"os"
 	"strings"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/joho/godotenv"
 )
 
 func init() {
@@ -26,10 +24,6 @@ func init() {
 }
 
 func main() {
-	if err := godotenv.Load(".env"); err != nil && !os.IsNotExist(err) {
-		log.Fatalf("load .env failed: %v", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -44,20 +38,17 @@ func main() {
 	if !ok {
 		log.Fatalf("invalid ETH_CHAIN_ID: %s", chainIDStr)
 	}
-	log.Printf("[withdraw-api] config loaded chain=%s chain_id=%s", chain, chainID.String())
 
 	// redis
 	rdc := redisx.New(redisAddr, redisPass, redisDB)
 	if err := rdc.Ping(ctx); err != nil {
 		log.Fatalf("redis ping failed: %v", err)
 	}
-	log.Printf("[withdraw-api] redis ready addr=%s db=%s", redisAddr, redisDB)
 
 	// kafka
 	brokers := strings.Split(helpers.Getenv("KAFKA_BROKERS", "127.0.0.1:9092"), ",")
 	topic := helpers.Getenv("KAFKA_TOPIC_BROADCAST", "tx.broadcast.v1")
 	producer := kafka.NewProducer(brokers, topic)
-	log.Printf("[withdraw-api] kafka producer ready topic=%s brokers=%s", topic, strings.Join(brokers, ","))
 
 	// Signer gRPC client
 	signerAddr := helpers.Getenv("SIGNER_GRPC_ADDR", "127.0.0.1:9001")
@@ -65,7 +56,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("init signer client failed: %v", err)
 	}
-	log.Printf("[withdraw-api] signer client ready addr=%s", signerAddr)
 
 	// Auth secret（demo 同值；生产会按调用方分配/或 mTLS）
 	authSecret := []byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET"))
@@ -75,7 +65,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("init eth client failed: %v", err)
 	}
-	log.Printf("[withdraw-api] eth client ready rpc=%s", ethRPC)
 	wsvc := withdraw.NewService(withdraw.Config{
 		Chain:      chain,
 		ChainID:    chainID,

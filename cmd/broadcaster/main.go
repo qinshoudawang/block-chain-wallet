@@ -35,14 +35,15 @@ func main() {
 	defer dlq.Close()
 
 	// consumer
-	topic := helpers.Getenv("KAFKA_TOPIC", "tx.broadcast.v1")
+	topic := helpers.Getenv("KAFKA_TOPIC_BROADCAST", "tx.broadcast.v1")
 	group := helpers.Getenv("KAFKA_GROUP", "broadcaster-v1")
 
 	r := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:  brokers,
-		Topic:    topic,
-		GroupID:  group,
-		MinBytes: 10e3,
+		Brokers: brokers,
+		Topic:   topic,
+		GroupID: group,
+		// 单笔提现消息较小，避免因 MinBytes 过大导致拉取延迟
+		MinBytes: 1,
 		MaxBytes: 10e6,
 	})
 	defer r.Close()
@@ -64,6 +65,7 @@ func main() {
 			_ = r.CommitMessages(context.Background(), msg)
 			continue
 		}
+		log.Printf("message received topic=%s partition=%d offset=%d withdraw=%s req=%s nonce=%d", topic, msg.Partition, msg.Offset, task.WithdrawID, task.RequestID, task.Nonce)
 
 		// 广播（最小重试：本地退避 2 次）
 		txHash, err := broadcastWithRetry(context.Background(), sender, task.SignedTxHex)
@@ -81,6 +83,7 @@ func main() {
 			// TODO：写 retry topic（延迟）或写 DB 让定时器重试
 			b, _ := json.Marshal(task)
 			_ = dlq.Publish(context.Background(), string(msg.Key), b) // 先放 DLQ 便于观察
+			log.Printf("broadcast failed, sent to dlq withdraw=%s req=%s attempt=%d err=%v", task.WithdrawID, task.RequestID, task.Attempt, err)
 			_ = r.CommitMessages(context.Background(), msg)
 			continue
 		}

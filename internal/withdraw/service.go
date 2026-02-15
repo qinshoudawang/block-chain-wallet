@@ -69,7 +69,6 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		log.Printf("[withdraw-service] nonce lock busy chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
 		return nil, errors.New("busy")
 	}
-	log.Printf("[withdraw-service] nonce lock acquired chain=%s from=%s", s.cfg.Chain, s.cfg.From.Hex())
 	defer func() { _ = lock.Unlock(context.Background()) }()
 
 	// TODO: 这里应该先做：账本冻结 + 风控审批
@@ -79,14 +78,12 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		log.Printf("[withdraw-service] allocate nonce failed chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
 		return nil, err
 	}
-	log.Printf("[withdraw-service] nonce allocated chain=%s from=%s nonce=%d", s.cfg.Chain, s.cfg.From.Hex(), nv)
 
 	unsignedTx, err := s.deps.Builder.BuildUnsignedTx(ctx, s.cfg.From, to, amt, nil, s.cfg.ChainID, nv)
 	if err != nil {
 		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s nonce=%d err=%v", s.cfg.Chain, s.cfg.From.Hex(), to.Hex(), nv, err)
 		return nil, err
 	}
-	log.Printf("[withdraw-service] unsigned tx built chain=%s from=%s to=%s nonce=%d size=%d", s.cfg.Chain, s.cfg.From.Hex(), to.Hex(), nv, len(unsignedTx))
 
 	withdrawID := uuid.NewString()
 	requestID := uuid.NewString()

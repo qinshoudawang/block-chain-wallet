@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"net"
-	"os"
 	"time"
 
 	"wallet-system/internal/helpers"
@@ -13,7 +12,6 @@ import (
 	"wallet-system/internal/signer/provider"
 	signpb "wallet-system/proto/signer"
 
-	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
 )
 
@@ -52,10 +50,6 @@ func init() {
 }
 
 func main() {
-	if err := godotenv.Load(".env"); err != nil && !os.IsNotExist(err) {
-		log.Fatalf("load .env failed: %v", err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
