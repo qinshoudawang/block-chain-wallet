@@ -11,6 +11,8 @@ import (
 	"wallet-system/internal/chain/evm"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
+	"wallet-system/internal/storage/model"
+	storagerepo "wallet-system/internal/storage/repo"
 	signpb "wallet-system/proto/signer"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -20,17 +22,34 @@ import (
 )
 
 type Config struct {
-	Chain      string
-	ChainID    *big.Int
-	From       common.Address
-	AuthSecret []byte
+	Chain         string
+	ChainID       *big.Int
+	From          common.Address
+	AuthSecret    []byte
+	GasReserveWei *big.Int
 }
 
 type Deps struct {
-	Redis   *redis.Client
-	Eth     *ethclient.Client
-	Builder *evm.EVMBuilder
-	Signer  signpb.SignerServiceClient
+	Redis    *redis.Client
+	Eth      *ethclient.Client
+	Builder  *evm.EVMBuilder
+	Signer   signpb.SignerServiceClient
+	Ledger   *storagerepo.LedgerRepo
+	Withdraw *storagerepo.WithdrawRepo
+	Risk     RiskApprover
+}
+
+type RiskApproveInput struct {
+	WithdrawID string
+	RequestID  string
+	Chain      string
+	From       string
+	To         string
+	Amount     string
+}
+
+type RiskApprover interface {
+	ApproveWithdraw(ctx context.Context, in RiskApproveInput) error
 }
 
 type Service struct {
@@ -54,7 +73,7 @@ type WithdrawInput struct {
 	Amount string // wei decimal
 }
 
-func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (*BroadcastTask, error) {
+func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (task *BroadcastTask, err error) {
 	log.Printf("[withdraw-service] create/sign start chain=%s from=%s to=%s amount=%s", s.cfg.Chain, s.cfg.From.Hex(), in.To, in.Amount)
 
 	to, amt, err := validateWithdrawInput(in)
@@ -63,6 +82,22 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		return nil, err
 	}
 
+	withdrawID := uuid.NewString()
+	requestID := uuid.NewString()
+
+	if err := s.freezeAndApprove(ctx, withdrawID, requestID, to, in.Amount, amt); err != nil {
+		log.Printf("[withdraw-service] precheck failed chain=%s withdraw_id=%s request_id=%s err=%v", s.cfg.Chain, withdrawID, requestID, err)
+		return nil, err
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if rerr := s.releaseFrozenOnError(context.Background(), withdrawID); rerr != nil {
+			log.Printf("[withdraw-service] release freeze failed chain=%s withdraw_id=%s err=%v", s.cfg.Chain, withdrawID, rerr)
+		}
+	}()
+
 	lockKey := "lock:nonce:" + s.cfg.Chain + ":" + s.cfg.From.Hex()
 	lock := redisx.NewLock(s.deps.Redis, lockKey, 8*time.Second)
 	if err := lock.TryLock(ctx); err != nil {
@@ -70,8 +105,6 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		return nil, errors.New("busy")
 	}
 	defer func() { _ = lock.Unlock(context.Background()) }()
-
-	// TODO: 这里应该先做：账本冻结 + 风控审批
 
 	nv, err := s.allocateNonce(ctx)
 	if err != nil {
@@ -85,15 +118,19 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		return nil, err
 	}
 
-	withdrawID := uuid.NewString()
-	requestID := uuid.NewString()
-
 	sresp, err := s.signWithdraw(ctx, withdrawID, requestID, to, in.Amount, unsignedTx)
 	if err != nil {
 		log.Printf("[withdraw-service] sign withdraw failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", s.cfg.Chain, withdrawID, requestID, nv, err)
 		return nil, err
 	}
 	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s nonce=%d signed_size=%d", s.cfg.Chain, withdrawID, requestID, nv, len(sresp.SignedTx))
+
+	signedTxHex := hex.EncodeToString(sresp.SignedTx)
+	if err := s.insertSignedOrder(ctx, withdrawID, requestID, to, in.Amount, nv, signedTxHex); err != nil {
+		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", s.cfg.Chain, withdrawID, requestID, nv, err)
+		return nil, err
+	}
+	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s nonce=%d", s.cfg.Chain, withdrawID, requestID, nv)
 
 	return &BroadcastTask{
 		Version:     1,
@@ -104,10 +141,74 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		To:          to.Hex(),
 		Amount:      in.Amount,
 		Nonce:       nv,
-		SignedTxHex: hex.EncodeToString(sresp.SignedTx),
+		SignedTxHex: signedTxHex,
 		CreatedAt:   time.Now().Unix(),
 		Attempt:     0,
 	}, nil
+}
+
+func (s *Service) freezeAndApprove(
+	ctx context.Context,
+	withdrawID string,
+	requestID string,
+	to common.Address,
+	amountStr string,
+	amount *big.Int,
+) error {
+	if s.deps.Ledger == nil {
+		return errors.New("ledger not configured")
+	}
+	freezeAmount := new(big.Int).Set(amount)
+	if s.cfg.GasReserveWei != nil && s.cfg.GasReserveWei.Sign() > 0 {
+		freezeAmount.Add(freezeAmount, s.cfg.GasReserveWei)
+	}
+	if _, err := s.deps.Ledger.FreezeWithdraw(ctx, s.cfg.Chain, s.cfg.From.Hex(), withdrawID, freezeAmount); err != nil {
+		return err
+	}
+	if s.deps.Risk == nil {
+		return nil
+	}
+	return s.deps.Risk.ApproveWithdraw(ctx, RiskApproveInput{
+		WithdrawID: withdrawID,
+		RequestID:  requestID,
+		Chain:      s.cfg.Chain,
+		From:       s.cfg.From.Hex(),
+		To:         to.Hex(),
+		Amount:     amountStr,
+	})
+}
+
+func (s *Service) releaseFrozenOnError(ctx context.Context, withdrawID string) error {
+	if s.deps.Ledger == nil {
+		return nil
+	}
+	return s.deps.Ledger.ReleaseWithdrawFreeze(ctx, withdrawID)
+}
+
+func (s *Service) insertSignedOrder(
+	ctx context.Context,
+	withdrawID string,
+	requestID string,
+	to common.Address,
+	amount string,
+	nonce uint64,
+	signedTxHex string,
+) error {
+	if s.deps.Withdraw == nil {
+		return errors.New("withdraw repo not configured")
+	}
+	return s.deps.Withdraw.InsertSigned(ctx, &model.WithdrawOrder{
+		WithdrawID:   withdrawID,
+		RequestID:    requestID,
+		Chain:        s.cfg.Chain,
+		FromAddr:     s.cfg.From.Hex(),
+		ToAddr:       to.Hex(),
+		Amount:       amount,
+		Nonce:        nonce,
+		SignedTxHex:  signedTxHex,
+		SignedTxHash: "",
+		TxHash:       "",
+	})
 }
 
 func validateWithdrawInput(in WithdrawInput) (common.Address, *big.Int, error) {

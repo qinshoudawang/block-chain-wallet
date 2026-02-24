@@ -1,0 +1,92 @@
+package main
+
+import (
+	"context"
+	"encoding/hex"
+	"encoding/json"
+	"log"
+	"strings"
+	"time"
+	"wallet-system/internal/broadcaster"
+	"wallet-system/internal/chain/evm"
+	"wallet-system/internal/storage/repo"
+	"wallet-system/internal/withdraw"
+)
+
+func RunConsumer(ctx context.Context, withdrawRepo *repo.WithdrawRepo, sender *evm.EVMSender, consumer *consumerRuntime) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		msg, err := consumer.reader.FetchMessage(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("fetch error: %v", err)
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+
+		var task withdraw.BroadcastTask
+		if err := json.Unmarshal(msg.Value, &task); err != nil {
+			log.Printf("bad message, send to dlq: %v", err)
+			_ = consumer.dlq.Publish(ctx, string(msg.Key), msg.Value)
+			_ = consumer.reader.CommitMessages(ctx, msg)
+			continue
+		}
+		log.Printf("message received topic=%s partition=%d offset=%d withdraw=%s req=%s nonce=%d", consumer.topic, msg.Partition, msg.Offset, task.WithdrawID, task.RequestID, task.Nonce)
+
+		txHash, err := broadcastWithRetry(ctx, sender, task.SignedTxHex)
+		if err != nil {
+			task.Attempt++
+			if task.Attempt > maxRetry {
+				b, _ := json.Marshal(task)
+				_ = consumer.dlq.Publish(ctx, string(msg.Key), b)
+				log.Printf("DLQ withdraw=%s req=%s err=%v", task.WithdrawID, task.RequestID, err)
+				_ = consumer.reader.CommitMessages(ctx, msg)
+				continue
+			}
+
+			next := time.Now().Add(broadcaster.NextBackoff(task.Attempt))
+			if _, dbErr := withdrawRepo.MarkRetry(ctx, task.WithdrawID, next, err.Error()); dbErr != nil {
+				log.Printf("mark retry failed withdraw=%s err=%v", task.WithdrawID, dbErr)
+			}
+			_ = consumer.reader.CommitMessages(ctx, msg)
+			continue
+		}
+
+		log.Printf("broadcast ok withdraw=%s req=%s tx=%s nonce=%d", task.WithdrawID, task.RequestID, txHash, task.Nonce)
+		if _, dbErr := withdrawRepo.MarkBroadcasted(ctx, task.WithdrawID, txHash); dbErr != nil {
+			log.Printf("mark broadcasted failed withdraw=%s tx=%s err=%v", task.WithdrawID, txHash, dbErr)
+		}
+		_ = consumer.reader.CommitMessages(ctx, msg)
+	}
+}
+
+func broadcastWithRetry(ctx context.Context, sender *evm.EVMSender, signedHex string) (string, error) {
+	raw, err := hex.DecodeString(strings.TrimPrefix(signedHex, "0x"))
+	if err != nil {
+		return "", err
+	}
+	backoffs := []time.Duration{0, 300 * time.Millisecond, 800 * time.Millisecond}
+	var last error
+	for _, b := range backoffs {
+		if b > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(b):
+			}
+		}
+		h, err := sender.Broadcast(ctx, raw)
+		if err == nil {
+			return h, nil
+		}
+		last = err
+	}
+	return "", last
+}

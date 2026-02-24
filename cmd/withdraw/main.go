@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math/big"
+	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"wallet-system/internal/api"
@@ -13,10 +18,15 @@ import (
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
+	"wallet-system/internal/risk"
+	storagemigrate "wallet-system/internal/storage/migrate"
+	"wallet-system/internal/storage/repo"
 	"wallet-system/internal/withdraw"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 func init() {
@@ -24,65 +34,142 @@ func init() {
 }
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ethRPC := helpers.MustEnv("ETH_RPC")
-	chain := helpers.MustEnv("ETH_CHAIN")
-	chainIDStr := helpers.MustEnv("ETH_CHAIN_ID")
-	redisAddr := helpers.MustEnv("REDIS_ADDR")
-	redisPass := helpers.MustEnv("REDIS_PASS")
-	redisDB := helpers.MustEnv("REDIS_DB")
+	go handleShutdown(cancel)
 
+	rdc := initRedis(ctx)
+	defer rdc.RDB.Close()
+	db := initGorm()
+	producer := initKafkaProducer()
+	defer producer.Close()
+	eth := initEthClient()
+	defer eth.Close()
+	wsvc := initWithdrawService(rdc, eth, producer, db)
+	server := initHTTPServer(wsvc)
+
+	if err := runHTTPServer(ctx, server); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func handleShutdown(cancel context.CancelFunc) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(ch)
+	<-ch
+	cancel()
+}
+
+func initRedis(ctx context.Context) *redisx.Client {
+	rdc := redisx.New(
+		helpers.MustEnv("REDIS_ADDR"),
+		helpers.MustEnv("REDIS_PASS"),
+		helpers.MustEnv("REDIS_DB"),
+	)
+	pingCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := rdc.Ping(pingCtx); err != nil {
+		log.Fatalf("redis ping failed: %v", err)
+	}
+	return rdc
+}
+
+func initKafkaProducer() *kafka.Producer {
+	brokers := strings.Split(helpers.Getenv("KAFKA_BROKERS", "127.0.0.1:9092"), ",")
+	topic := helpers.Getenv("KAFKA_TOPIC_BROADCAST", "tx.broadcast.v1")
+	return kafka.NewProducer(brokers, topic)
+}
+
+func initEthClient() *ethclient.Client {
+	eth, err := ethclient.Dial(helpers.MustEnv("ETH_RPC"))
+	if err != nil {
+		log.Fatalf("init eth client failed: %v", err)
+	}
+	return eth
+}
+
+func initGorm() *gorm.DB {
+	dsn := "host=" + helpers.Getenv("DB_HOST", "127.0.0.1") +
+		" port=" + helpers.Getenv("DB_PORT", "5432") +
+		" user=" + helpers.MustEnv("DB_USER") +
+		" password=" + helpers.MustEnv("DB_PASS") +
+		" dbname=" + helpers.MustEnv("DB_NAME") +
+		" sslmode=" + helpers.Getenv("DB_SSLMODE", "disable") +
+		" TimeZone=" + helpers.Getenv("DB_TZ", "Asia/Shanghai")
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("init postgres failed: %v", err)
+	}
+	if err := storagemigrate.All(db); err != nil {
+		log.Fatalf("migrate storage tables failed: %v", err)
+	}
+	return db
+}
+
+func initWithdrawService(rdc *redisx.Client, eth *ethclient.Client, producer *kafka.Producer, db *gorm.DB) *withdraw.Service {
+	chainIDStr := helpers.MustEnv("ETH_CHAIN_ID")
 	chainID, ok := new(big.Int).SetString(chainIDStr, 10)
 	if !ok {
 		log.Fatalf("invalid ETH_CHAIN_ID: %s", chainIDStr)
 	}
-
-	// redis
-	rdc := redisx.New(redisAddr, redisPass, redisDB)
-	if err := rdc.Ping(ctx); err != nil {
-		log.Fatalf("redis ping failed: %v", err)
+	gasReserveWeiStr := helpers.Getenv("WITHDRAW_GAS_RESERVE_WEI", "0")
+	gasReserveWei, ok := new(big.Int).SetString(gasReserveWeiStr, 10)
+	if !ok || gasReserveWei.Sign() < 0 {
+		log.Fatalf("invalid WITHDRAW_GAS_RESERVE_WEI: %s", gasReserveWeiStr)
 	}
 
-	// kafka
-	brokers := strings.Split(helpers.Getenv("KAFKA_BROKERS", "127.0.0.1:9092"), ",")
-	topic := helpers.Getenv("KAFKA_TOPIC_BROADCAST", "tx.broadcast.v1")
-	producer := kafka.NewProducer(brokers, topic)
-
-	// Signer gRPC client
 	signerAddr := helpers.Getenv("SIGNER_GRPC_ADDR", "127.0.0.1:9001")
 	signerCli, err := clients.NewSignerClient(signerAddr)
 	if err != nil {
 		log.Fatalf("init signer client failed: %v", err)
 	}
 
-	// Auth secret（demo 同值；生产会按调用方分配/或 mTLS）
-	authSecret := []byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET"))
-
-	// Withdraw service（编排层）
-	eth, err := ethclient.Dial(ethRPC)
-	if err != nil {
-		log.Fatalf("init eth client failed: %v", err)
-	}
-	wsvc := withdraw.NewService(withdraw.Config{
-		Chain:      chain,
-		ChainID:    chainID,
-		From:       common.HexToAddress(helpers.MustEnv("FROM_ADDRESS")),
-		AuthSecret: authSecret,
+	return withdraw.NewService(withdraw.Config{
+		Chain:         helpers.MustEnv("ETH_CHAIN"),
+		ChainID:       chainID,
+		From:          common.HexToAddress(helpers.MustEnv("FROM_ADDRESS")),
+		AuthSecret:    []byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET")),
+		GasReserveWei: gasReserveWei,
 	}, withdraw.Deps{
-		Redis:   rdc.RDB,
-		Eth:     eth,
-		Builder: evm.NewEVMBuilder(eth),
-		Signer:  signerCli,
+		Redis:    rdc.RDB,
+		Eth:      eth,
+		Builder:  evm.NewEVMBuilder(eth),
+		Signer:   signerCli,
+		Ledger:   repo.NewLedgerRepo(db),
+		Withdraw: repo.NewWithdrawRepo(db),
+		Risk:     risk.NewNoopApprover(),
 	}, producer)
+}
 
-	// Gin router
-	r := api.NewRouter(wsvc)
-
+func initHTTPServer(wsvc *withdraw.Service) *http.Server {
 	addr := helpers.Getenv("API_ADDR", "127.0.0.1:8080")
-	log.Printf("[withdraw-api] listening on %s", addr)
-	if err := r.Run(addr); err != nil {
-		log.Fatal(err)
+	return &http.Server{
+		Addr:    addr,
+		Handler: api.NewRouter(wsvc),
+	}
+}
+
+func runHTTPServer(ctx context.Context, server *http.Server) error {
+	errCh := make(chan error, 1)
+
+	go func() {
+		log.Printf("[withdraw-api] listening on %s", server.Addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		return <-errCh
+	case err := <-errCh:
+		return err
 	}
 }

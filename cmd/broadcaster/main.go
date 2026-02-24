@@ -2,18 +2,27 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
+	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"strings"
-	"time"
+	"syscall"
 
 	"wallet-system/internal/chain/evm"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
-	"wallet-system/internal/withdraw"
+	storagemigrate "wallet-system/internal/storage/migrate"
+	"wallet-system/internal/storage/repo"
 
 	kafkago "github.com/segmentio/kafka-go"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
+
+const (
+	maxRetry  = 4
+	threshold = 5
 )
 
 func init() {
@@ -21,100 +30,110 @@ func init() {
 }
 
 func main() {
-	// tx sender
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go handleShutdown(cancel)
+
+	db := initGorm()
+	withdrawRepo := repo.NewWithdrawRepo(db)
+	ledgerRepo := repo.NewLedgerRepo(db)
+	producer := initKafkaProducer()
+	defer producer.Close()
+	consumer := initKafkaConsumer()
+	defer consumer.Close()
+	sender := initEVMSender()
+
+	go RunConsumer(ctx, withdrawRepo, sender, consumer)
+	go RunReplayer(ctx, withdrawRepo, producer)
+	go RunConfirmer(ctx, withdrawRepo, ledgerRepo, sender.EthClient(), threshold)
+
+	<-ctx.Done()
+}
+
+type consumerRuntime struct {
+	reader *kafkago.Reader
+	dlq    *kafka.Producer
+	topic  string
+	group  string
+}
+
+func (c *consumerRuntime) Close() error {
+	if c == nil {
+		return nil
+	}
+	if c.reader != nil {
+		_ = c.reader.Close()
+	}
+	if c.dlq != nil {
+		_ = c.dlq.Close()
+	}
+	return nil
+}
+
+func handleShutdown(cancel context.CancelFunc) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(ch)
+	<-ch
+	cancel()
+}
+
+func initGorm() *gorm.DB {
+	dsn := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s TimeZone=%s",
+		helpers.Getenv("DB_HOST", "127.0.0.1"),
+		helpers.Getenv("DB_PORT", "5432"),
+		helpers.MustEnv("DB_USER"),
+		helpers.MustEnv("DB_PASS"),
+		helpers.MustEnv("DB_NAME"),
+		helpers.Getenv("DB_SSLMODE", "disable"),
+		helpers.Getenv("DB_TZ", "Asia/Shanghai"),
+	)
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("init postgres failed: %v", err)
+	}
+	if err := storagemigrate.All(db); err != nil {
+		log.Fatalf("migrate storage tables failed: %v", err)
+	}
+	return db
+}
+
+func initEVMSender() *evm.EVMSender {
 	rpc := helpers.MustEnv("ETH_RPC")
 	sender, err := evm.NewEVMSender(rpc)
 	if err != nil {
 		log.Fatalf("init sender failed: %v", err)
 	}
+	return sender
+}
 
+func initKafkaProducer() *kafka.Producer {
 	brokers := strings.Split(helpers.Getenv("KAFKA_BROKERS", "127.0.0.1:9092"), ",")
+	topic := helpers.Getenv("KAFKA_TOPIC_BROADCAST", "tx.broadcast.v1")
+	return kafka.NewProducer(brokers, topic)
+}
 
-	// DLQ producer
-	dlq := kafka.NewProducer(brokers, "tx.broadcast.dlq.v1")
-	defer dlq.Close()
-
-	// consumer
+func initKafkaConsumer() *consumerRuntime {
+	brokers := strings.Split(helpers.Getenv("KAFKA_BROKERS", "127.0.0.1:9092"), ",")
 	topic := helpers.Getenv("KAFKA_TOPIC_BROADCAST", "tx.broadcast.v1")
 	group := helpers.Getenv("KAFKA_GROUP", "broadcaster-v1")
+	dlqTopic := helpers.Getenv("KAFKA_TOPIC_BROADCAST_DLQ", "tx.broadcast.dlq.v1")
 
 	r := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: brokers,
-		Topic:   topic,
-		GroupID: group,
-		// 单笔提现消息较小，避免因 MinBytes 过大导致拉取延迟
+		Brokers:  brokers,
+		Topic:    topic,
+		GroupID:  group,
 		MinBytes: 1,
 		MaxBytes: 10e6,
 	})
-	defer r.Close()
-
 	log.Printf("[broadcaster] consuming %s group=%s", topic, group)
 
-	for {
-		msg, err := r.FetchMessage(context.Background())
-		if err != nil {
-			log.Printf("fetch error: %v", err)
-			time.Sleep(300 * time.Millisecond)
-			continue
-		}
-
-		var task withdraw.BroadcastTask
-		if err := json.Unmarshal(msg.Value, &task); err != nil {
-			log.Printf("bad message, send to dlq: %v", err)
-			_ = dlq.Publish(context.Background(), string(msg.Key), msg.Value)
-			_ = r.CommitMessages(context.Background(), msg)
-			continue
-		}
-		log.Printf("message received topic=%s partition=%d offset=%d withdraw=%s req=%s nonce=%d", topic, msg.Partition, msg.Offset, task.WithdrawID, task.RequestID, task.Nonce)
-
-		// 广播（最小重试：本地退避 2 次）
-		txHash, err := broadcastWithRetry(context.Background(), sender, task.SignedTxHex)
-		if err != nil {
-			task.Attempt++
-			// 超过阈值 → DLQ
-			if task.Attempt >= 3 {
-				b, _ := json.Marshal(task)
-				_ = dlq.Publish(context.Background(), string(msg.Key), b)
-				log.Printf("DLQ withdraw=%s req=%s err=%v", task.WithdrawID, task.RequestID, err)
-				_ = r.CommitMessages(context.Background(), msg)
-				continue
-			}
-
-			// TODO：写 retry topic（延迟）或写 DB 让定时器重试
-			b, _ := json.Marshal(task)
-			_ = dlq.Publish(context.Background(), string(msg.Key), b) // 先放 DLQ 便于观察
-			log.Printf("broadcast failed, sent to dlq withdraw=%s req=%s attempt=%d err=%v", task.WithdrawID, task.RequestID, task.Attempt, err)
-			_ = r.CommitMessages(context.Background(), msg)
-			continue
-		}
-
-		log.Printf("broadcast ok withdraw=%s req=%s tx=%s nonce=%d", task.WithdrawID, task.RequestID, txHash, task.Nonce)
-
-		// TODO: 更新 DB 状态 BROADCASTED + txHash（下一步做）
-		_ = r.CommitMessages(context.Background(), msg)
+	return &consumerRuntime{
+		reader: r,
+		dlq:    kafka.NewProducer(brokers, dlqTopic),
+		topic:  topic,
+		group:  group,
 	}
-}
-
-func broadcastWithRetry(ctx context.Context, sender *evm.EVMSender, signedHex string) (string, error) {
-	raw, err := hex.DecodeString(strings.TrimPrefix(signedHex, "0x"))
-	if err != nil {
-		return "", err
-	}
-	backoffs := []time.Duration{0, 300 * time.Millisecond, 800 * time.Millisecond}
-	var last error
-	for _, b := range backoffs {
-		if b > 0 {
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(b):
-			}
-		}
-		h, err := sender.Broadcast(ctx, raw)
-		if err == nil {
-			return h, nil
-		}
-		last = err
-	}
-	return "", last
 }

@@ -29,3 +29,10 @@ func (s *EVMSender) Broadcast(ctx context.Context, signedTxBytes []byte) (string
 	}
 	return tx.Hash().Hex(), nil
 }
+
+func (s *EVMSender) EthClient() *ethclient.Client {
+	if s == nil {
+		return nil
+	}
+	return s.cli
+}
