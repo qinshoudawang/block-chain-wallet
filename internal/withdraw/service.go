@@ -60,6 +60,12 @@ type Service struct {
 }
 
 func NewService(cfg Config, deps Deps, producer *kafka.Producer) *Service {
+	if deps.Ledger == nil {
+		panic("ledger repo is required")
+	}
+	if deps.Withdraw == nil {
+		panic("withdraw repo is required")
+	}
 	return &Service{
 		cfg:      cfg,
 		deps:     deps,
@@ -155,9 +161,6 @@ func (s *Service) freezeAndApprove(
 	amountStr string,
 	amount *big.Int,
 ) error {
-	if s.deps.Ledger == nil {
-		return errors.New("ledger not configured")
-	}
 	freezeAmount := new(big.Int).Set(amount)
 	if s.cfg.GasReserveWei != nil && s.cfg.GasReserveWei.Sign() > 0 {
 		freezeAmount.Add(freezeAmount, s.cfg.GasReserveWei)
@@ -179,9 +182,6 @@ func (s *Service) freezeAndApprove(
 }
 
 func (s *Service) releaseFrozenOnError(ctx context.Context, withdrawID string) error {
-	if s.deps.Ledger == nil {
-		return nil
-	}
 	return s.deps.Ledger.ReleaseWithdrawFreeze(ctx, withdrawID)
 }
 
@@ -194,9 +194,6 @@ func (s *Service) insertSignedOrder(
 	nonce uint64,
 	signedTxHex string,
 ) error {
-	if s.deps.Withdraw == nil {
-		return errors.New("withdraw repo not configured")
-	}
 	return s.deps.Withdraw.InsertSigned(ctx, &model.WithdrawOrder{
 		WithdrawID:   withdrawID,
 		RequestID:    requestID,
@@ -226,21 +223,17 @@ func validateWithdrawInput(in WithdrawInput) (common.Address, *big.Int, error) {
 
 func (s *Service) allocateNonce(ctx context.Context) (uint64, error) {
 	nm := evm.NewNonceManager(s.deps.Redis, s.deps.Eth, s.cfg.Chain, s.cfg.From)
-	_ = nm.EnsureInitialized(ctx)
-
-	nv, err := nm.Allocate(ctx)
-	if err == nil {
-		return nv, nil
-	}
-	log.Printf("[withdraw-service] allocate nonce retry after init chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
-	if err2 := nm.EnsureInitialized(ctx); err2 != nil {
-		log.Printf("[withdraw-service] nonce ensure init failed chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err2)
+	nm.WithNonceFloorProvider(func(ctx context.Context) (uint64, error) {
+		return s.deps.Withdraw.NextNonceFloor(ctx, s.cfg.Chain, s.cfg.From.Hex())
+	})
+	if err := nm.EnsureInitialized(ctx); err != nil {
+		log.Printf("[withdraw-service] nonce ensure init failed chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
 		return 0, errors.New("nonce init failed")
 	}
 
-	nv, err = nm.Allocate(ctx)
+	nv, err := nm.Allocate(ctx)
 	if err != nil {
-		log.Printf("[withdraw-service] nonce allocate failed after retry chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
+		log.Printf("[withdraw-service] nonce allocate failed chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
 		return 0, errors.New("nonce allocate failed")
 	}
 	return nv, nil

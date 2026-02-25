@@ -7,11 +7,12 @@
 package signer
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -36,7 +37,7 @@ type SignRequest struct {
 	UnsignedTx []byte `protobuf:"bytes,7,opt,name=unsigned_tx,json=unsignedTx,proto3" json:"unsigned_tx,omitempty"` // RLP of unsigned tx (go-ethereum MarshalBinary)
 	// 授权验真（HMAC）
 	AuthToken string `protobuf:"bytes,8,opt,name=auth_token,json=authToken,proto3" json:"auth_token,omitempty"` // hex(HMAC-SHA256)
-	// 可选：调用方身份（审计用）
+	// 调用方身份（审计用）
 	Caller        string `protobuf:"bytes,9,opt,name=caller,proto3" json:"caller,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

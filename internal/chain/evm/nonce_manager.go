@@ -24,6 +24,8 @@ type NonceManager struct {
 	from  common.Address
 
 	ttl time.Duration // optional TTL for the nonce key (can be 0 = no ttl)
+
+	nonceFloorProvider func(context.Context) (uint64, error)
 }
 
 func NewNonceManager(rdb *redis.Client, eth *ethclient.Client, chain string, from common.Address) *NonceManager {
@@ -34,6 +36,11 @@ func NewNonceManager(rdb *redis.Client, eth *ethclient.Client, chain string, fro
 		from:  from,
 		ttl:   0,
 	}
+}
+
+func (m *NonceManager) WithNonceFloorProvider(fn func(context.Context) (uint64, error)) *NonceManager {
+	m.nonceFloorProvider = fn
+	return m
 }
 
 func (m *NonceManager) nonceKey() string {
@@ -60,6 +67,16 @@ func (m *NonceManager) EnsureInitialized(ctx context.Context) error {
 		return err
 	}
 
+	if m.nonceFloorProvider != nil {
+		floor, err := m.nonceFloorProvider(ctx)
+		if err != nil {
+			return err
+		}
+		if floor > pn {
+			pn = floor
+		}
+	}
+
 	// Set only if still missing (race safe)
 	ok, err := m.rdb.SetNX(ctx, key, pn, m.ttl).Result()
 	if err != nil {
@@ -71,6 +88,28 @@ func (m *NonceManager) EnsureInitialized(ctx context.Context) error {
 
 	// Someone else initialized after our Exists
 	return nil
+}
+
+// EnsureAtLeast raises the stored next nonce to minNonce if current value is lower.
+// If the key is missing, it initializes it to minNonce.
+func (m *NonceManager) EnsureAtLeast(ctx context.Context, minNonce uint64) error {
+	key := m.nonceKey()
+	const lua = `
+local minv = tonumber(ARGV[1])
+local v = redis.call("GET", KEYS[1])
+if not v then
+  redis.call("SET", KEYS[1], minv)
+  return minv
+end
+local cur = tonumber(v)
+if cur < minv then
+  redis.call("SET", KEYS[1], minv)
+  return minv
+end
+return cur
+`
+	_, err := m.rdb.Eval(ctx, lua, []string{key}, minNonce).Result()
+	return err
 }
 
 // Allocate returns a nonce and increments stored next nonce by 1.

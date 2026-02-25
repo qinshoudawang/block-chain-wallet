@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"math/big"
 	"time"
@@ -23,6 +24,30 @@ func NewWithdrawRepo(db *gorm.DB) *WithdrawRepo {
 func (r *WithdrawRepo) InsertSigned(ctx context.Context, o *model.WithdrawOrder) error {
 	o.Status = model.StatusSIGNED
 	return r.db.WithContext(ctx).Create(o).Error
+}
+
+// NextNonceFloor returns max(nonce)+1 for a (chain, from) pair from persisted withdraw orders.
+// It is used to prevent Redis nonce allocator from reusing a nonce after cache loss.
+func (r *WithdrawRepo) NextNonceFloor(ctx context.Context, chain, fromAddr string) (uint64, error) {
+	if r == nil || r.db == nil {
+		return 0, errors.New("withdraw repo not configured")
+	}
+	var maxNonce sql.NullInt64
+	row := r.db.WithContext(ctx).
+		Model(&model.WithdrawOrder{}).
+		Where("chain = ? AND from_addr = ?", chain, fromAddr).
+		Select("MAX(nonce)").
+		Row()
+	if err := row.Scan(&maxNonce); err != nil {
+		return 0, err
+	}
+	if !maxNonce.Valid {
+		return 0, nil
+	}
+	if maxNonce.Int64 < 0 {
+		return 0, errors.New("invalid max nonce in db")
+	}
+	return uint64(maxNonce.Int64) + 1, nil
 }
 
 // MarkBroadcasted: broadcaster 广播成功后调用（幂等）

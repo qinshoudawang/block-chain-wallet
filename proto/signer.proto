@@ -27,7 +27,7 @@ message SignRequest {
   // 授权验真（HMAC）
   string auth_token = 8;   // hex(HMAC-SHA256)
 
-  // 可选：调用方身份（审计用）
+  // 调用方身份（审计用）
   string caller = 9;
 }
 
