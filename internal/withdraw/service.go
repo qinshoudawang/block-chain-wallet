@@ -115,16 +115,18 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 	}
 	log.Printf("[withdraw-service] create/sign start chain=%s from=%s to=%s amount=%s", chain, profile.From.Hex(), in.To, in.Amount)
 
-	to, amt, err := validateWithdrawInput(in)
+	validatedIn, err := chainClient.ValidateWithdrawInput(in.To, in.Amount)
 	if err != nil {
 		log.Printf("[withdraw-service] validate input failed chain=%s from=%s to=%s amount=%s err=%v", chain, profile.From.Hex(), in.To, in.Amount, err)
 		return nil, err
 	}
+	toAddr := validatedIn.ToAddress()
+	amt := validatedIn.AmountValue()
 
 	withdrawID := uuid.NewString()
 	requestID := uuid.NewString()
 
-	if err := s.freezeAndApprove(ctx, chain, profile, withdrawID, requestID, to, in.Amount, amt); err != nil {
+	if err := s.freezeAndApprove(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, amt); err != nil {
 		log.Printf("[withdraw-service] precheck failed chain=%s withdraw_id=%s request_id=%s err=%v", chain, withdrawID, requestID, err)
 		return nil, err
 	}
@@ -153,13 +155,13 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		return nil, errors.New("nonce allocate failed")
 	}
 
-	unsignedTx, err := chainClient.BuildUnsignedWithdrawTx(ctx, s.chainRuntime(chain, profile), to, amt, nv)
+	unsignedTx, err := chainClient.BuildUnsignedWithdrawTx(ctx, s.chainRuntime(chain, profile), validatedIn, nv)
 	if err != nil {
-		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s nonce=%d err=%v", chain, profile.From.Hex(), to.Hex(), nv, err)
+		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s nonce=%d err=%v", chain, profile.From.Hex(), toAddr, nv, err)
 		return nil, err
 	}
 
-	sresp, err := s.signWithdraw(ctx, chain, profile, withdrawID, requestID, to, in.Amount, unsignedTx)
+	sresp, err := s.signWithdraw(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, unsignedTx)
 	if err != nil {
 		log.Printf("[withdraw-service] sign withdraw failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", chain, withdrawID, requestID, nv, err)
 		return nil, err
@@ -167,7 +169,7 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s nonce=%d signed_size=%d", chain, withdrawID, requestID, nv, len(sresp.SignedTx))
 
 	signedTxHex := hex.EncodeToString(sresp.SignedTx)
-	if err := s.insertSignedOrder(ctx, chain, profile, withdrawID, requestID, to, in.Amount, nv, signedTxHex); err != nil {
+	if err := s.insertSignedOrder(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, nv, signedTxHex); err != nil {
 		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", chain, withdrawID, requestID, nv, err)
 		return nil, err
 	}
@@ -179,7 +181,7 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		RequestID:   requestID,
 		Chain:       chain,
 		From:        profile.From.Hex(),
-		To:          to.Hex(),
+		To:          toAddr,
 		Amount:      in.Amount,
 		Nonce:       nv,
 		SignedTxHex: signedTxHex,
@@ -194,7 +196,7 @@ func (s *Service) freezeAndApprove(
 	profile ChainProfile,
 	withdrawID string,
 	requestID string,
-	to common.Address,
+	toAddr string,
 	amountStr string,
 	amount *big.Int,
 ) error {
@@ -213,7 +215,7 @@ func (s *Service) freezeAndApprove(
 		RequestID:  requestID,
 		Chain:      chain,
 		From:       profile.From.Hex(),
-		To:         to.Hex(),
+		To:         toAddr,
 		Amount:     amountStr,
 	})
 }
@@ -228,7 +230,7 @@ func (s *Service) insertSignedOrder(
 	profile ChainProfile,
 	withdrawID string,
 	requestID string,
-	to common.Address,
+	toAddr string,
 	amount string,
 	nonce uint64,
 	signedTxHex string,
@@ -238,26 +240,13 @@ func (s *Service) insertSignedOrder(
 		RequestID:    requestID,
 		Chain:        chain,
 		FromAddr:     profile.From.Hex(),
-		ToAddr:       to.Hex(),
+		ToAddr:       toAddr,
 		Amount:       amount,
 		Nonce:        nonce,
 		SignedTxHex:  signedTxHex,
 		SignedTxHash: "",
 		TxHash:       "",
 	})
-}
-
-func validateWithdrawInput(in WithdrawInput) (common.Address, *big.Int, error) {
-	to := common.HexToAddress(in.To)
-	if to == (common.Address{}) {
-		return common.Address{}, nil, errors.New("invalid to address")
-	}
-
-	amt := new(big.Int)
-	if _, ok := amt.SetString(in.Amount, 10); !ok || amt.Sign() <= 0 {
-		return common.Address{}, nil, errors.New("invalid amount")
-	}
-	return to, amt, nil
 }
 
 func (s *Service) chainRuntime(chain string, profile ChainProfile) chainclient.Runtime {
@@ -275,18 +264,18 @@ func (s *Service) signWithdraw(
 	profile ChainProfile,
 	withdrawID string,
 	requestID string,
-	to common.Address,
+	toAddr string,
 	amount string,
 	unsignedTx []byte,
 ) (*signpb.SignResponse, error) {
-	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", chain, withdrawID, requestID, profile.From.Hex(), to.Hex(), amount, len(unsignedTx))
+	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", chain, withdrawID, requestID, profile.From.Hex(), toAddr, amount, len(unsignedTx))
 
 	authToken, _ := s.auth.MakeAuthToken(
 		withdrawID,
 		requestID,
 		chain,
 		profile.From.Hex(),
-		to.Hex(),
+		toAddr,
 		amount,
 		unsignedTx,
 	)
@@ -299,7 +288,7 @@ func (s *Service) signWithdraw(
 		WithdrawId:  withdrawID,
 		Chain:       chain,
 		FromAddress: profile.From.Hex(),
-		ToAddress:   to.Hex(),
+		ToAddress:   toAddr,
 		Amount:      amount,
 		UnsignedTx:  unsignedTx,
 		AuthToken:   authToken,

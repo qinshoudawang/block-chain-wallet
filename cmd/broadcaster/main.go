@@ -39,7 +39,9 @@ func main() {
 	defer producer.Close()
 	consumer := initKafkaConsumer()
 	defer consumer.Close()
-	clients := initBroadcasterChainClients()
+	sender := initEVMSender()
+	defer sender.Close()
+	clients := initBroadcasterChainClients(sender)
 
 	go broadcaster.RunConsumer(ctx, withdrawRepo, clients, consumer)
 	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
@@ -86,10 +88,9 @@ func initEVMSender() *evm.EVMSender {
 	return sender
 }
 
-func initBroadcasterChainClients() *broadcasterchain.Registry {
+func initBroadcasterChainClients(sender *evm.EVMSender) *broadcasterchain.Registry {
 	registry := broadcasterchain.NewRegistry()
 	chain := helpers.MustEnv("ETH_CHAIN")
-	sender := initEVMSender()
 	if err := registry.Register(chain, broadcasterchain.NewEVMClient(sender)); err != nil {
 		log.Fatalf("register broadcaster chain client failed: %v", err)
 	}

@@ -7,10 +7,25 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func NewSignerClient(addr string) (signpb.SignerServiceClient, error) {
+type SignerClient struct {
+	Conn   *grpc.ClientConn
+	Client signpb.SignerServiceClient
+}
+
+func (c *SignerClient) Close() error {
+	if c == nil || c.Conn == nil {
+		return nil
+	}
+	return c.Conn.Close()
+}
+
+func NewSignerClient(addr string) (*SignerClient, error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
-	return signpb.NewSignerServiceClient(conn), nil
+	return &SignerClient{
+		Conn:   conn,
+		Client: signpb.NewSignerServiceClient(conn),
+	}, nil
 }

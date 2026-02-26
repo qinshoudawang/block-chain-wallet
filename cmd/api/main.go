@@ -49,8 +49,9 @@ func main() {
 	eth := initEthClient()
 	defer eth.Close()
 	signerCli := initSignerClient()
-	wsvc := initWithdrawService(rdc, eth, producer, db, signerCli)
-	asvc := address.NewAddressService(db, signerCli)
+	defer signerCli.Close()
+	wsvc := initWithdrawService(rdc, eth, producer, db, signerCli.Client)
+	asvc := address.NewAddressService(db, signerCli.Client)
 	server := initHTTPServer(wsvc, asvc)
 
 	if err := runHTTPServer(ctx, server); err != nil {
@@ -112,7 +113,7 @@ func initGorm() *gorm.DB {
 	return db
 }
 
-func initSignerClient() signpb.SignerServiceClient {
+func initSignerClient() *clients.SignerClient {
 	signerAddr := helpers.Getenv("SIGNER_GRPC_ADDR", "127.0.0.1:9001")
 	signerCli, err := clients.NewSignerClient(signerAddr)
 	if err != nil {

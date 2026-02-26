@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
@@ -30,9 +31,30 @@ func (s *EVMSender) Broadcast(ctx context.Context, signedTxBytes []byte) (string
 	return tx.Hash().Hex(), nil
 }
 
-func (s *EVMSender) EthClient() *ethclient.Client {
-	if s == nil {
+func (s *EVMSender) LatestHeight(ctx context.Context) (uint64, error) {
+	if s == nil || s.cli == nil {
+		return 0, ErrSenderNotConfigured
+	}
+	return s.cli.BlockNumber(ctx)
+}
+
+func (s *EVMSender) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
+	if s == nil || s.cli == nil {
+		return nil, ErrSenderNotConfigured
+	}
+	return s.cli.TransactionReceipt(ctx, txHash)
+}
+
+func (s *EVMSender) Close() error {
+	if s == nil || s.cli == nil {
 		return nil
 	}
-	return s.cli
+	s.cli.Close()
+	return nil
 }
+
+var ErrSenderNotConfigured = errSenderNotConfigured{}
+
+type errSenderNotConfigured struct{}
+
+func (errSenderNotConfigured) Error() string { return "evm sender not configured" }

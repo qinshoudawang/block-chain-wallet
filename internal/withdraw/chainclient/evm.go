@@ -15,8 +15,28 @@ type evmClient struct {
 	eth *ethclient.Client
 }
 
+type evmValidatedWithdrawInput struct {
+	to     common.Address
+	amount *big.Int
+}
+
+func (i evmValidatedWithdrawInput) ToAddress() string     { return i.to.Hex() }
+func (i evmValidatedWithdrawInput) AmountValue() *big.Int { return new(big.Int).Set(i.amount) }
+
 func newEVMClient(eth *ethclient.Client) Client {
 	return &evmClient{eth: eth}
+}
+
+func (c *evmClient) ValidateWithdrawInput(to string, amount string) (ValidatedWithdrawInput, error) {
+	addr := common.HexToAddress(to)
+	if addr == (common.Address{}) {
+		return nil, errors.New("invalid to address")
+	}
+	amt := new(big.Int)
+	if _, ok := amt.SetString(amount, 10); !ok || amt.Sign() <= 0 {
+		return nil, errors.New("invalid amount")
+	}
+	return evmValidatedWithdrawInput{to: addr, amount: amt}, nil
 }
 
 func (c *evmClient) AllocateNonce(ctx context.Context, rt Runtime, nonceFloorProvider NonceFloorProvider) (uint64, error) {
@@ -41,8 +61,7 @@ func (c *evmClient) AllocateNonce(ctx context.Context, rt Runtime, nonceFloorPro
 func (c *evmClient) BuildUnsignedWithdrawTx(
 	ctx context.Context,
 	rt Runtime,
-	to common.Address,
-	amount *big.Int,
+	in ValidatedWithdrawInput,
 	nonce uint64,
 ) ([]byte, error) {
 	if c == nil || c.eth == nil {
@@ -51,5 +70,13 @@ func (c *evmClient) BuildUnsignedWithdrawTx(
 	if rt.ChainID == nil {
 		return nil, errors.New("chain id is required")
 	}
-	return evm.NewEVMBuilder(c.eth).BuildUnsignedTx(ctx, rt.From, to, amount, nil, rt.ChainID, nonce)
+	evmIn, ok := in.(evmValidatedWithdrawInput)
+	if !ok {
+		if p, ok := in.(*evmValidatedWithdrawInput); ok && p != nil {
+			evmIn = *p
+		} else {
+			return nil, errors.New("invalid evm withdraw input")
+		}
+	}
+	return evm.NewEVMBuilder(c.eth).BuildUnsignedTx(ctx, rt.From, evmIn.to, evmIn.amount, nil, rt.ChainID, nonce)
 }

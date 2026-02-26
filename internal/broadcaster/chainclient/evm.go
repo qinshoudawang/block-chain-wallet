@@ -33,20 +33,17 @@ func (c *evmClient) BroadcastSignedTxHex(ctx context.Context, signedTxHex string
 }
 
 func (c *evmClient) GetLatestHeight(ctx context.Context) (uint64, error) {
-	if c == nil || c.sender == nil || c.sender.EthClient() == nil {
-		return 0, errors.New("evm eth client is required")
+	if c == nil || c.sender == nil {
+		return 0, errors.New("evm sender is required")
 	}
-	eth := c.sender.EthClient()
-	return eth.BlockNumber(ctx)
+	return c.sender.LatestHeight(ctx)
 }
 
 func (c *evmClient) GetConfirmation(ctx context.Context, txHash string, amount string, latestHeight uint64) (*Confirmation, error) {
-	if c == nil || c.sender == nil || c.sender.EthClient() == nil {
-		return nil, errors.New("evm eth client is required")
+	if c == nil || c.sender == nil {
+		return nil, errors.New("evm sender is required")
 	}
-	eth := c.sender.EthClient()
-
-	receipt, err := eth.TransactionReceipt(ctx, common.HexToHash(txHash))
+	receipt, err := c.sender.TransactionReceipt(ctx, common.HexToHash(txHash))
 	if err != nil {
 		// Not found / not indexed yet: caller treats as pending.
 		return nil, nil
