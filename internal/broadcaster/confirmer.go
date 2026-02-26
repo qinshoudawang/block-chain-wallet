@@ -1,4 +1,4 @@
-package main
+package broadcaster
 
 import (
 	"context"
@@ -13,7 +13,12 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
-func RunConfirmer(ctx context.Context, wr *repo.WithdrawRepo, lr *repo.LedgerRepo, eth *ethclient.Client, threshold int) {
+const (
+	maxRetry  = 4
+	threshold = 5
+)
+
+func RunConfirmer(ctx context.Context, wr *repo.WithdrawRepo, lr *repo.LedgerRepo, eth *ethclient.Client) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 

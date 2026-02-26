@@ -1,11 +1,11 @@
-package main
+package broadcaster
 
 import (
 	"context"
 	"encoding/json"
 	"time"
 
-	"wallet-system/internal/broadcaster"
+	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/storage/repo"
 	"wallet-system/internal/withdraw"
@@ -52,5 +52,5 @@ func RunReplayer(ctx context.Context, wr *repo.WithdrawRepo, prod *kafka.Produce
 }
 
 func nextRetryTime(attempt int) time.Time {
-	return time.Now().Add(broadcaster.NextBackoff(attempt))
+	return time.Now().Add(helpers.NextBackoff(attempt))
 }

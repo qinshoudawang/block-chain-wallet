@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"wallet-system/internal/broadcaster"
 	"wallet-system/internal/chain/evm"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
@@ -18,11 +19,6 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-)
-
-const (
-	maxRetry  = 4
-	threshold = 5
 )
 
 func init() {
@@ -44,31 +40,11 @@ func main() {
 	defer consumer.Close()
 	sender := initEVMSender()
 
-	go RunConsumer(ctx, withdrawRepo, sender, consumer)
-	go RunReplayer(ctx, withdrawRepo, producer)
-	go RunConfirmer(ctx, withdrawRepo, ledgerRepo, sender.EthClient(), threshold)
+	go broadcaster.RunConsumer(ctx, withdrawRepo, sender, consumer)
+	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
+	go broadcaster.RunConfirmer(ctx, withdrawRepo, ledgerRepo, sender.EthClient())
 
 	<-ctx.Done()
-}
-
-type consumerRuntime struct {
-	reader *kafkago.Reader
-	dlq    *kafka.Producer
-	topic  string
-	group  string
-}
-
-func (c *consumerRuntime) Close() error {
-	if c == nil {
-		return nil
-	}
-	if c.reader != nil {
-		_ = c.reader.Close()
-	}
-	if c.dlq != nil {
-		_ = c.dlq.Close()
-	}
-	return nil
 }
 
 func handleShutdown(cancel context.CancelFunc) {
@@ -115,7 +91,7 @@ func initKafkaProducer() *kafka.Producer {
 	return kafka.NewProducer(brokers, topic)
 }
 
-func initKafkaConsumer() *consumerRuntime {
+func initKafkaConsumer() *broadcaster.ConsumerRuntime {
 	brokers := strings.Split(helpers.Getenv("KAFKA_BROKERS", "127.0.0.1:9092"), ",")
 	topic := helpers.Getenv("KAFKA_TOPIC_BROADCAST", "tx.broadcast.v1")
 	group := helpers.Getenv("KAFKA_GROUP", "broadcaster-v1")
@@ -130,10 +106,10 @@ func initKafkaConsumer() *consumerRuntime {
 	})
 	log.Printf("[broadcaster] consuming %s group=%s", topic, group)
 
-	return &consumerRuntime{
-		reader: r,
-		dlq:    kafka.NewProducer(brokers, dlqTopic),
-		topic:  topic,
-		group:  group,
+	return &broadcaster.ConsumerRuntime{
+		Reader: r,
+		Dlq:    kafka.NewProducer(brokers, dlqTopic),
+		Topic:  topic,
+		Group:  group,
 	}
 }
