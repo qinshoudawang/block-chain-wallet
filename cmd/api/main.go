@@ -14,7 +14,6 @@ import (
 
 	"wallet-system/internal/address"
 	"wallet-system/internal/api"
-	"wallet-system/internal/chain/evm"
 	"wallet-system/internal/clients"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
@@ -23,6 +22,7 @@ import (
 	storagemigrate "wallet-system/internal/storage/migrate"
 	"wallet-system/internal/storage/repo"
 	"wallet-system/internal/withdraw"
+	"wallet-system/internal/withdraw/chainclient"
 	signpb "wallet-system/proto/signer"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -132,22 +132,33 @@ func initWithdrawService(rdc *redisx.Client, eth *ethclient.Client, producer *ka
 	if !ok || gasReserveWei.Sign() < 0 {
 		log.Fatalf("invalid WITHDRAW_GAS_RESERVE_WEI: %s", gasReserveWeiStr)
 	}
+	chain := helpers.MustEnv("ETH_CHAIN")
 
-	return withdraw.NewService(withdraw.Config{
-		Chain:         helpers.MustEnv("ETH_CHAIN"),
-		ChainID:       chainID,
-		From:          common.HexToAddress(helpers.MustEnv("FROM_ADDRESS")),
-		AuthSecret:    []byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET")),
-		GasReserveWei: gasReserveWei,
-	}, withdraw.Deps{
-		Redis:    rdc.RDB,
-		Eth:      eth,
-		Builder:  evm.NewEVMBuilder(eth),
-		Signer:   signerCli,
-		Ledger:   repo.NewLedgerRepo(db),
-		Withdraw: repo.NewWithdrawRepo(db),
-		Risk:     risk.NewNoopApprover(),
-	}, producer)
+	return withdraw.NewService(
+		map[string]withdraw.ChainProfile{
+			chain: {
+				From:          common.HexToAddress(helpers.MustEnv("FROM_ADDRESS")),
+				ChainID:       chainID,
+				FreezeReserve: gasReserveWei,
+			},
+		},
+		[]byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET")),
+		withdraw.Deps{
+			Redis:       rdc.RDB,
+			ChainClient: buildWithdrawChainClientRegistry(eth),
+			Signer:      signerCli,
+			Ledger:      repo.NewLedgerRepo(db),
+			Withdraw:    repo.NewWithdrawRepo(db),
+			Risk:        risk.NewNoopApprover(),
+		},
+		producer,
+	)
+}
+
+func buildWithdrawChainClientRegistry(eth *ethclient.Client) *chainclient.Registry {
+	registry := chainclient.NewRegistry()
+	registry.RegisterEVM(eth)
+	return registry
 }
 
 func initHTTPServer(wsvc *withdraw.Service, asvc *address.AddressService) *http.Server {

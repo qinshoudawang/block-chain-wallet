@@ -8,36 +8,32 @@ import (
 	"math/big"
 	"time"
 
-	"wallet-system/internal/chain/evm"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
 	"wallet-system/internal/storage/model"
 	storagerepo "wallet-system/internal/storage/repo"
+	"wallet-system/internal/withdraw/chainclient"
 	signpb "wallet-system/proto/signer"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
-type Config struct {
-	Chain         string
-	ChainID       *big.Int
-	From          common.Address
-	AuthSecret    []byte
-	GasReserveWei *big.Int
+type Deps struct {
+	Redis       *redis.Client
+	ChainClient *chainclient.Registry
+	Signer      signpb.SignerServiceClient
+	Ledger      *storagerepo.LedgerRepo
+	Withdraw    *storagerepo.WithdrawRepo
+	Risk        RiskApprover
 }
 
-type Deps struct {
-	Redis    *redis.Client
-	Eth      *ethclient.Client
-	Builder  *evm.EVMBuilder
-	Signer   signpb.SignerServiceClient
-	Ledger   *storagerepo.LedgerRepo
-	Withdraw *storagerepo.WithdrawRepo
-	Risk     RiskApprover
+type ChainProfile struct {
+	From          common.Address
+	ChainID       *big.Int
+	FreezeReserve *big.Int // optional extra reserve in smallest unit; nil/0 means none
 }
 
 type RiskApproveInput struct {
@@ -54,23 +50,46 @@ type RiskApprover interface {
 }
 
 type Service struct {
-	cfg      Config
-	deps     Deps
+	profiles map[string]ChainProfile
 	auth     *AuthSigner
+	deps     Deps
 	Producer *kafka.Producer
 }
 
-func NewService(cfg Config, deps Deps, producer *kafka.Producer) *Service {
+func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, producer *kafka.Producer) *Service {
 	if deps.Ledger == nil {
 		panic("ledger repo is required")
 	}
 	if deps.Withdraw == nil {
 		panic("withdraw repo is required")
 	}
+	if deps.ChainClient == nil {
+		panic("chain client registry is required")
+	}
+
+	if len(profiles) == 0 {
+		panic("at least one chain profile is required")
+	}
+	if len(authSecret) == 0 {
+		panic("auth secret is required")
+	}
+	normalizedProfiles := make(map[string]ChainProfile, len(profiles))
+	for chain, p := range profiles {
+		spec, err := helpers.ResolveChainSpec(chain)
+		if err != nil {
+			panic(err)
+		}
+		canonical := spec.CanonicalChain
+		if _, exists := normalizedProfiles[canonical]; exists {
+			panic("duplicate chain profile: " + canonical)
+		}
+		normalizedProfiles[canonical] = p
+	}
+
 	return &Service{
-		cfg:      cfg,
+		profiles: normalizedProfiles,
+		auth:     NewAuthSigner(authSecret),
 		deps:     deps,
-		auth:     NewAuthSigner(cfg.AuthSecret),
 		Producer: producer,
 	}
 }
@@ -80,35 +99,33 @@ func (s *Service) MatchRequestChain(chain string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cfgSpec, err := helpers.ResolveChainSpec(s.cfg.Chain)
-	if err != nil {
-		return "", err
-	}
-	if reqSpec.CanonicalChain != cfgSpec.CanonicalChain {
-		return "", errors.New("chain mismatch")
-	}
 	return reqSpec.CanonicalChain, nil
 }
 
 type WithdrawInput struct {
+	Chain  string
 	To     string
 	Amount string // wei decimal
 }
 
 func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (task *BroadcastTask, err error) {
-	log.Printf("[withdraw-service] create/sign start chain=%s from=%s to=%s amount=%s", s.cfg.Chain, s.cfg.From.Hex(), in.To, in.Amount)
+	chain, profile, chainClient, err := s.resolveChainContext(in.Chain)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[withdraw-service] create/sign start chain=%s from=%s to=%s amount=%s", chain, profile.From.Hex(), in.To, in.Amount)
 
 	to, amt, err := validateWithdrawInput(in)
 	if err != nil {
-		log.Printf("[withdraw-service] validate input failed chain=%s from=%s to=%s amount=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), in.To, in.Amount, err)
+		log.Printf("[withdraw-service] validate input failed chain=%s from=%s to=%s amount=%s err=%v", chain, profile.From.Hex(), in.To, in.Amount, err)
 		return nil, err
 	}
 
 	withdrawID := uuid.NewString()
 	requestID := uuid.NewString()
 
-	if err := s.freezeAndApprove(ctx, withdrawID, requestID, to, in.Amount, amt); err != nil {
-		log.Printf("[withdraw-service] precheck failed chain=%s withdraw_id=%s request_id=%s err=%v", s.cfg.Chain, withdrawID, requestID, err)
+	if err := s.freezeAndApprove(ctx, chain, profile, withdrawID, requestID, to, in.Amount, amt); err != nil {
+		log.Printf("[withdraw-service] precheck failed chain=%s withdraw_id=%s request_id=%s err=%v", chain, withdrawID, requestID, err)
 		return nil, err
 	}
 	defer func() {
@@ -116,50 +133,52 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 			return
 		}
 		if rerr := s.releaseFrozenOnError(context.Background(), withdrawID); rerr != nil {
-			log.Printf("[withdraw-service] release freeze failed chain=%s withdraw_id=%s err=%v", s.cfg.Chain, withdrawID, rerr)
+			log.Printf("[withdraw-service] release freeze failed chain=%s withdraw_id=%s err=%v", chain, withdrawID, rerr)
 		}
 	}()
 
-	lockKey := "lock:nonce:" + s.cfg.Chain + ":" + s.cfg.From.Hex()
+	lockKey := "lock:nonce:" + chain + ":" + profile.From.Hex()
 	lock := redisx.NewLock(s.deps.Redis, lockKey, 8*time.Second)
 	if err := lock.TryLock(ctx); err != nil {
-		log.Printf("[withdraw-service] nonce lock busy chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
+		log.Printf("[withdraw-service] nonce lock busy chain=%s from=%s err=%v", chain, profile.From.Hex(), err)
 		return nil, errors.New("busy")
 	}
 	defer func() { _ = lock.Unlock(context.Background()) }()
 
-	nv, err := s.allocateNonce(ctx)
+	nv, err := chainClient.AllocateNonce(ctx, s.chainRuntime(chain, profile), func(ctx context.Context) (uint64, error) {
+		return s.deps.Withdraw.NextNonceFloor(ctx, chain, profile.From.Hex())
+	})
 	if err != nil {
-		log.Printf("[withdraw-service] allocate nonce failed chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
+		log.Printf("[withdraw-service] nonce allocate failed chain=%s from=%s err=%v", chain, profile.From.Hex(), err)
+		return nil, errors.New("nonce allocate failed")
+	}
+
+	unsignedTx, err := chainClient.BuildUnsignedWithdrawTx(ctx, s.chainRuntime(chain, profile), to, amt, nv)
+	if err != nil {
+		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s nonce=%d err=%v", chain, profile.From.Hex(), to.Hex(), nv, err)
 		return nil, err
 	}
 
-	unsignedTx, err := s.deps.Builder.BuildUnsignedTx(ctx, s.cfg.From, to, amt, nil, s.cfg.ChainID, nv)
+	sresp, err := s.signWithdraw(ctx, chain, profile, withdrawID, requestID, to, in.Amount, unsignedTx)
 	if err != nil {
-		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s nonce=%d err=%v", s.cfg.Chain, s.cfg.From.Hex(), to.Hex(), nv, err)
+		log.Printf("[withdraw-service] sign withdraw failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", chain, withdrawID, requestID, nv, err)
 		return nil, err
 	}
-
-	sresp, err := s.signWithdraw(ctx, withdrawID, requestID, to, in.Amount, unsignedTx)
-	if err != nil {
-		log.Printf("[withdraw-service] sign withdraw failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", s.cfg.Chain, withdrawID, requestID, nv, err)
-		return nil, err
-	}
-	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s nonce=%d signed_size=%d", s.cfg.Chain, withdrawID, requestID, nv, len(sresp.SignedTx))
+	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s nonce=%d signed_size=%d", chain, withdrawID, requestID, nv, len(sresp.SignedTx))
 
 	signedTxHex := hex.EncodeToString(sresp.SignedTx)
-	if err := s.insertSignedOrder(ctx, withdrawID, requestID, to, in.Amount, nv, signedTxHex); err != nil {
-		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", s.cfg.Chain, withdrawID, requestID, nv, err)
+	if err := s.insertSignedOrder(ctx, chain, profile, withdrawID, requestID, to, in.Amount, nv, signedTxHex); err != nil {
+		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", chain, withdrawID, requestID, nv, err)
 		return nil, err
 	}
-	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s nonce=%d", s.cfg.Chain, withdrawID, requestID, nv)
+	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s nonce=%d", chain, withdrawID, requestID, nv)
 
 	return &BroadcastTask{
 		Version:     1,
 		WithdrawID:  withdrawID,
 		RequestID:   requestID,
-		Chain:       s.cfg.Chain,
-		From:        s.cfg.From.Hex(),
+		Chain:       chain,
+		From:        profile.From.Hex(),
 		To:          to.Hex(),
 		Amount:      in.Amount,
 		Nonce:       nv,
@@ -171,6 +190,8 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 
 func (s *Service) freezeAndApprove(
 	ctx context.Context,
+	chain string,
+	profile ChainProfile,
 	withdrawID string,
 	requestID string,
 	to common.Address,
@@ -178,10 +199,10 @@ func (s *Service) freezeAndApprove(
 	amount *big.Int,
 ) error {
 	freezeAmount := new(big.Int).Set(amount)
-	if s.cfg.GasReserveWei != nil && s.cfg.GasReserveWei.Sign() > 0 {
-		freezeAmount.Add(freezeAmount, s.cfg.GasReserveWei)
+	if profile.FreezeReserve != nil && profile.FreezeReserve.Sign() > 0 {
+		freezeAmount.Add(freezeAmount, profile.FreezeReserve)
 	}
-	if _, err := s.deps.Ledger.FreezeWithdraw(ctx, s.cfg.Chain, s.cfg.From.Hex(), withdrawID, freezeAmount); err != nil {
+	if _, err := s.deps.Ledger.FreezeWithdraw(ctx, chain, profile.From.Hex(), withdrawID, freezeAmount); err != nil {
 		return err
 	}
 	if s.deps.Risk == nil {
@@ -190,8 +211,8 @@ func (s *Service) freezeAndApprove(
 	return s.deps.Risk.ApproveWithdraw(ctx, RiskApproveInput{
 		WithdrawID: withdrawID,
 		RequestID:  requestID,
-		Chain:      s.cfg.Chain,
-		From:       s.cfg.From.Hex(),
+		Chain:      chain,
+		From:       profile.From.Hex(),
 		To:         to.Hex(),
 		Amount:     amountStr,
 	})
@@ -203,6 +224,8 @@ func (s *Service) releaseFrozenOnError(ctx context.Context, withdrawID string) e
 
 func (s *Service) insertSignedOrder(
 	ctx context.Context,
+	chain string,
+	profile ChainProfile,
 	withdrawID string,
 	requestID string,
 	to common.Address,
@@ -213,8 +236,8 @@ func (s *Service) insertSignedOrder(
 	return s.deps.Withdraw.InsertSigned(ctx, &model.WithdrawOrder{
 		WithdrawID:   withdrawID,
 		RequestID:    requestID,
-		Chain:        s.cfg.Chain,
-		FromAddr:     s.cfg.From.Hex(),
+		Chain:        chain,
+		FromAddr:     profile.From.Hex(),
 		ToAddr:       to.Hex(),
 		Amount:       amount,
 		Nonce:        nonce,
@@ -237,39 +260,32 @@ func validateWithdrawInput(in WithdrawInput) (common.Address, *big.Int, error) {
 	return to, amt, nil
 }
 
-func (s *Service) allocateNonce(ctx context.Context) (uint64, error) {
-	nm := evm.NewNonceManager(s.deps.Redis, s.deps.Eth, s.cfg.Chain, s.cfg.From)
-	nm.WithNonceFloorProvider(func(ctx context.Context) (uint64, error) {
-		return s.deps.Withdraw.NextNonceFloor(ctx, s.cfg.Chain, s.cfg.From.Hex())
-	})
-	if err := nm.EnsureInitialized(ctx); err != nil {
-		log.Printf("[withdraw-service] nonce ensure init failed chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
-		return 0, errors.New("nonce init failed")
+func (s *Service) chainRuntime(chain string, profile ChainProfile) chainclient.Runtime {
+	return chainclient.Runtime{
+		Redis:   s.deps.Redis,
+		Chain:   chain,
+		ChainID: profile.ChainID,
+		From:    profile.From,
 	}
-
-	nv, err := nm.Allocate(ctx)
-	if err != nil {
-		log.Printf("[withdraw-service] nonce allocate failed chain=%s from=%s err=%v", s.cfg.Chain, s.cfg.From.Hex(), err)
-		return 0, errors.New("nonce allocate failed")
-	}
-	return nv, nil
 }
 
 func (s *Service) signWithdraw(
 	ctx context.Context,
+	chain string,
+	profile ChainProfile,
 	withdrawID string,
 	requestID string,
 	to common.Address,
 	amount string,
 	unsignedTx []byte,
 ) (*signpb.SignResponse, error) {
-	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", s.cfg.Chain, withdrawID, requestID, s.cfg.From.Hex(), to.Hex(), amount, len(unsignedTx))
+	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", chain, withdrawID, requestID, profile.From.Hex(), to.Hex(), amount, len(unsignedTx))
 
 	authToken, _ := s.auth.MakeAuthToken(
 		withdrawID,
 		requestID,
-		s.cfg.Chain,
-		s.cfg.From.Hex(),
+		chain,
+		profile.From.Hex(),
 		to.Hex(),
 		amount,
 		unsignedTx,
@@ -281,8 +297,8 @@ func (s *Service) signWithdraw(
 	resp, err := s.deps.Signer.SignTransaction(sctx, &signpb.SignRequest{
 		RequestId:   requestID,
 		WithdrawId:  withdrawID,
-		Chain:       s.cfg.Chain,
-		FromAddress: s.cfg.From.Hex(),
+		Chain:       chain,
+		FromAddress: profile.From.Hex(),
 		ToAddress:   to.Hex(),
 		Amount:      amount,
 		UnsignedTx:  unsignedTx,
@@ -290,9 +306,25 @@ func (s *Service) signWithdraw(
 		Caller:      "withdraw-api",
 	})
 	if err != nil {
-		log.Printf("[withdraw-service] signer rpc failed chain=%s withdraw_id=%s request_id=%s err=%v", s.cfg.Chain, withdrawID, requestID, err)
+		log.Printf("[withdraw-service] signer rpc failed chain=%s withdraw_id=%s request_id=%s err=%v", chain, withdrawID, requestID, err)
 		return nil, err
 	}
-	log.Printf("[withdraw-service] signer rpc success chain=%s withdraw_id=%s request_id=%s signed_size=%d", s.cfg.Chain, withdrawID, requestID, len(resp.SignedTx))
+	log.Printf("[withdraw-service] signer rpc success chain=%s withdraw_id=%s request_id=%s signed_size=%d", chain, withdrawID, requestID, len(resp.SignedTx))
 	return resp, nil
+}
+
+func (s *Service) resolveChainContext(chain string) (string, ChainProfile, chainclient.Client, error) {
+	spec, err := helpers.ResolveChainSpec(chain)
+	if err != nil {
+		return "", ChainProfile{}, nil, err
+	}
+	profile, ok := s.profiles[spec.CanonicalChain]
+	if !ok {
+		return "", ChainProfile{}, nil, errors.New("chain profile not configured")
+	}
+	cli, err := s.deps.ChainClient.ResolveByChain(spec.CanonicalChain)
+	if err != nil {
+		return "", ChainProfile{}, nil, err
+	}
+	return spec.CanonicalChain, profile, cli, nil
 }

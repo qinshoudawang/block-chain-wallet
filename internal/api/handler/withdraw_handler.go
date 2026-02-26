@@ -28,22 +28,23 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
-	log.Printf("[withdraw-handler] request parsed chain_id=%s to=%s amount=%s", req.ChainId, req.To, req.Amount)
+	log.Printf("[withdraw-handler] request parsed chain=%s to=%s amount=%s", req.Chain, req.To, req.Amount)
 
-	canonicalChain, err := h.svc.MatchRequestChain(req.ChainId)
+	canonicalChain, err := h.svc.MatchRequestChain(req.Chain)
 	if err != nil {
-		log.Printf("[withdraw-handler] invalid chain_id req_chain=%s err=%v", req.ChainId, err)
+		log.Printf("[withdraw-handler] invalid chain_id req_chain=%s err=%v", req.Chain, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chain_id"})
 		return
 	}
 
 	// 获取签名
 	resp, err := h.svc.CreateAndSignWithdraw(c.Request.Context(), withdraw.WithdrawInput{
+		Chain:  canonicalChain,
 		To:     req.To,
 		Amount: req.Amount,
 	})
 	if err != nil {
-		log.Printf("[withdraw-handler] create/sign failed chain_id=%s to=%s amount=%s err=%v", req.ChainId, req.To, req.Amount, err)
+		log.Printf("[withdraw-handler] create/sign failed chain=%s to=%s amount=%s err=%v", req.Chain, req.To, req.Amount, err)
 		// 简化：生产会分错误码（policy拒绝/忙/系统错）
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
