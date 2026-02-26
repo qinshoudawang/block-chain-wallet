@@ -93,14 +93,19 @@ func initSignerService(rdc *redisx.Client) *signer.Service {
 		log.Fatal("SIGNER_AUTH_SECRET is required")
 	}
 	mnemonic := helpers.MustEnv("SIGNER_MNEMONIC")
+	chain := helpers.MustEnv("ETH_CHAIN")
 
 	chainID := helpers.MustBig(helpers.MustEnv("ETH_CHAIN_ID"))
-	evmSigner, err := provider.NewEVMLocalSigner(helpers.MustEnv("HOT_WALLET_PRIV"), chainID)
+	evmSigner, err := provider.NewEVMSigner(helpers.MustEnv("HOT_WALLET_PRIV"), chainID)
 	if err != nil {
 		log.Fatalf("init evm local signer failed: %v", err)
 	}
+	registry := provider.NewRegistry()
+	if err := registry.Register(chain, evmSigner); err != nil {
+		log.Fatalf("register signer provider failed: %v", err)
+	}
 
-	return signer.NewService(rdc.RDB, evmSigner, authSecret, mnemonic)
+	return signer.NewService(rdc.RDB, registry, authSecret, mnemonic)
 }
 
 func initListener() net.Listener {

@@ -25,12 +25,16 @@ type Service struct {
 	rdb        *redis.Client
 	guard      *idempotency.Guard
 	policy     *policy.PolicyEngine
-	provider   provider.SignerProvider
+	providers  *provider.Registry
 	authSecret []byte
 	deriver    *derivation.Deriver
 }
 
-func NewService(rdb *redis.Client, p provider.SignerProvider, authSecret []byte, mnemonic string) *Service {
+func NewService(rdb *redis.Client, providers *provider.Registry, authSecret []byte, mnemonic string) *Service {
+	if providers == nil {
+		log.Fatal("signer provider registry is required")
+		return nil
+	}
 	deriver, err := derivation.NewDeriver(mnemonic)
 	if err != nil {
 		log.Fatal("init address deriver failed")
@@ -40,7 +44,7 @@ func NewService(rdb *redis.Client, p provider.SignerProvider, authSecret []byte,
 		rdb:        rdb,
 		guard:      idempotency.New(rdb, 30*time.Minute),
 		policy:     policy.NewPolicyEngine(),
-		provider:   p,
+		providers:  providers,
 		authSecret: authSecret,
 		deriver:    deriver,
 	}
@@ -84,8 +88,13 @@ func (s *Service) SignTransaction(ctx context.Context, req *signpb.SignRequest) 
 		return nil, ErrAuthFailed
 	}
 
+	p, err := s.providers.Resolve(req.Chain)
+	if err != nil {
+		return nil, err
+	}
+
 	// 4) 签名（Provider：Local / MockKMS / 后续可换 HSM/MPC）
-	signed, err := s.provider.Sign(req.UnsignedTx)
+	signed, err := p.Sign(req.UnsignedTx)
 	if err != nil {
 		return nil, err
 	}

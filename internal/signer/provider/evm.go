@@ -9,12 +9,12 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-type EVMLocalSigner struct {
+type EVMSigner struct {
 	privKey *ecdsa.PrivateKey
 	chainID *big.Int
 }
 
-func NewEVMLocalSigner(hexPriv string, chainID *big.Int) (*EVMLocalSigner, error) {
+func NewEVMSigner(hexPriv string, chainID *big.Int) (*EVMSigner, error) {
 	if hexPriv == "" {
 		return nil, errors.New("empty EVM private key")
 	}
@@ -22,10 +22,10 @@ func NewEVMLocalSigner(hexPriv string, chainID *big.Int) (*EVMLocalSigner, error
 	if err != nil {
 		return nil, err
 	}
-	return &EVMLocalSigner{privKey: priv, chainID: chainID}, nil
+	return &EVMSigner{privKey: priv, chainID: chainID}, nil
 }
 
-func (s *EVMLocalSigner) Sign(unsignedTx []byte) ([]byte, error) {
+func (s *EVMSigner) Sign(unsignedTx []byte) ([]byte, error) {
 	var tx types.Transaction
 	if err := tx.UnmarshalBinary(unsignedTx); err != nil {
 		return nil, err
@@ -38,11 +38,4 @@ func (s *EVMLocalSigner) Sign(unsignedTx []byte) ([]byte, error) {
 	}
 
 	return signedTx.MarshalBinary()
-}
-
-func trim0x(s string) string {
-	if len(s) >= 2 && (s[:2] == "0x" || s[:2] == "0X") {
-		return s[2:]
-	}
-	return s
 }
