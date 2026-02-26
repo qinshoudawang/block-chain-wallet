@@ -3,14 +3,10 @@ package broadcaster
 import (
 	"context"
 	"log"
-	"math/big"
 	"time"
 
+	"wallet-system/internal/broadcaster/chainclient"
 	"wallet-system/internal/storage/repo"
-
-	"github.com/ethereum/go-ethereum/common"
-	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 const (
@@ -18,7 +14,7 @@ const (
 	threshold = 5
 )
 
-func RunConfirmer(ctx context.Context, wr *repo.WithdrawRepo, lr *repo.LedgerRepo, eth *ethclient.Client) {
+func RunConfirmer(ctx context.Context, wr *repo.WithdrawRepo, lr *repo.LedgerRepo, clients *chainclient.Registry) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -35,73 +31,69 @@ func RunConfirmer(ctx context.Context, wr *repo.WithdrawRepo, lr *repo.LedgerRep
 			if len(items) == 0 {
 				continue
 			}
-			latest, err := eth.BlockNumber(ctx)
-			if err != nil {
-				log.Printf("[confirmer] get latest block failed err=%v", err)
-				continue
-			}
+			latestByChain := make(map[string]uint64)
 			for _, o := range items {
-				receipt, err := eth.TransactionReceipt(ctx, common.HexToHash(o.TxHash))
+				chain, cli, err := clients.Resolve(o.Chain)
 				if err != nil {
-					// 未出块/未索引到，先跳过
+					log.Printf("[confirmer] resolve chain client failed withdraw_id=%s chain=%s err=%v", o.WithdrawID, o.Chain, err)
 					continue
 				}
-
-				bn := receipt.BlockNumber.Uint64()
-				conf := int(latest - bn + 1)
+				latest, ok := latestByChain[chain]
+				if !ok {
+					latest, err = cli.GetLatestHeight(ctx)
+					if err != nil {
+						log.Printf("[confirmer] get latest height failed chain=%s err=%v", chain, err)
+						continue
+					}
+					latestByChain[chain] = latest
+				}
+				cf, err := cli.GetConfirmation(ctx, o.TxHash, o.Amount, latest)
+				if err != nil {
+					log.Printf("[confirmer] get confirmation failed withdraw_id=%s tx_hash=%s chain=%s err=%v", o.WithdrawID, o.TxHash, chain, err)
+					continue
+				}
+				if cf == nil {
+					// pending / not indexed yet
+					continue
+				}
+				bn := cf.BlockNumber
+				conf := cf.Confirmations
 
 				if conf >= threshold {
-					gasPriceWei, gasFeeWei, actualSpentWei, err := calcSettlementWei(o.Amount, receipt)
-					if err != nil {
-						log.Printf("[confirmer] calc settlement failed withdraw_id=%s tx_hash=%s err=%v", o.WithdrawID, o.TxHash, err)
+					if cf.Settlement != nil {
+						ok, err := wr.ConfirmWithSettlement(
+							ctx,
+							lr,
+							o.WithdrawID,
+							bn,
+							conf,
+							threshold,
+							cf.Settlement.GasUsed,
+							cf.Settlement.GasPriceWei,
+							cf.Settlement.GasFeeWei,
+							cf.Settlement.ActualSpentWei,
+						)
+						if err != nil || !ok {
+							log.Printf("[confirmer] confirm with settlement skipped withdraw_id=%s tx_hash=%s chain=%s ok=%v err=%v", o.WithdrawID, o.TxHash, chain, ok, err)
+							continue
+						}
+						log.Printf("[confirmer] confirm settled withdraw_id=%s tx_hash=%s chain=%s block=%d conf=%d threshold=%d", o.WithdrawID, o.TxHash, chain, bn, conf, threshold)
 						continue
 					}
-					ok, err := wr.ConfirmWithSettlement(
-						ctx,
-						lr,
-						o.WithdrawID,
-						bn,
-						conf,
-						threshold,
-						receipt.GasUsed,
-						gasPriceWei,
-						gasFeeWei,
-						actualSpentWei,
-					)
+					ok, err := wr.UpdateConfirmations(ctx, o.WithdrawID, bn, conf, threshold)
 					if err != nil || !ok {
-						log.Printf("[confirmer] confirm with settlement skipped withdraw_id=%s tx_hash=%s ok=%v err=%v", o.WithdrawID, o.TxHash, ok, err)
+						log.Printf("[confirmer] confirm without settlement skipped withdraw_id=%s tx_hash=%s chain=%s block=%d conf=%d ok=%v err=%v", o.WithdrawID, o.TxHash, chain, bn, conf, ok, err)
 						continue
 					}
-					log.Printf("[confirmer] confirm settled withdraw_id=%s tx_hash=%s block=%d conf=%d threshold=%d", o.WithdrawID, o.TxHash, bn, conf, threshold)
 					continue
 				}
 
-				ok, err := wr.UpdateConfirmations(ctx, o.WithdrawID, bn, conf, threshold)
+				ok, err = wr.UpdateConfirmations(ctx, o.WithdrawID, bn, conf, threshold)
 				if err != nil || !ok {
-					log.Printf("[confirmer] update confirmations skipped withdraw_id=%s tx_hash=%s block=%d conf=%d ok=%v err=%v", o.WithdrawID, o.TxHash, bn, conf, ok, err)
+					log.Printf("[confirmer] update confirmations skipped withdraw_id=%s tx_hash=%s chain=%s block=%d conf=%d ok=%v err=%v", o.WithdrawID, o.TxHash, chain, bn, conf, ok, err)
 					continue
 				}
 			}
 		}
 	}
 }
-
-func calcSettlementWei(amountWei string, receipt *ethtypes.Receipt) (gasPriceWei, gasFeeWei, actualSpentWei *big.Int, err error) {
-	amount := new(big.Int)
-	if _, ok := amount.SetString(amountWei, 10); !ok || amount.Sign() < 0 {
-		return nil, nil, nil, errInvalidAmountWei
-	}
-	gasPriceWei = receipt.EffectiveGasPrice
-	if gasPriceWei == nil {
-		gasPriceWei = big.NewInt(0)
-	}
-	gasFeeWei = new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), gasPriceWei)
-	actualSpentWei = new(big.Int).Add(amount, gasFeeWei)
-	return gasPriceWei, gasFeeWei, actualSpentWei, nil
-}
-
-var errInvalidAmountWei = invalidAmountWeiError{}
-
-type invalidAmountWeiError struct{}
-
-func (invalidAmountWeiError) Error() string { return "invalid amount wei" }

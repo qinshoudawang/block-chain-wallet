@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"wallet-system/internal/broadcaster"
+	broadcasterchain "wallet-system/internal/broadcaster/chainclient"
 	"wallet-system/internal/chain/evm"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
@@ -38,11 +39,11 @@ func main() {
 	defer producer.Close()
 	consumer := initKafkaConsumer()
 	defer consumer.Close()
-	sender := initEVMSender()
+	clients := initBroadcasterChainClients()
 
-	go broadcaster.RunConsumer(ctx, withdrawRepo, sender, consumer)
+	go broadcaster.RunConsumer(ctx, withdrawRepo, clients, consumer)
 	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
-	go broadcaster.RunConfirmer(ctx, withdrawRepo, ledgerRepo, sender.EthClient())
+	go broadcaster.RunConfirmer(ctx, withdrawRepo, ledgerRepo, clients)
 
 	<-ctx.Done()
 }
@@ -83,6 +84,16 @@ func initEVMSender() *evm.EVMSender {
 		log.Fatalf("init sender failed: %v", err)
 	}
 	return sender
+}
+
+func initBroadcasterChainClients() *broadcasterchain.Registry {
+	registry := broadcasterchain.NewRegistry()
+	chain := helpers.MustEnv("ETH_CHAIN")
+	sender := initEVMSender()
+	if err := registry.Register(chain, broadcasterchain.NewEVMClient(sender)); err != nil {
+		log.Fatalf("register broadcaster chain client failed: %v", err)
+	}
+	return registry
 }
 
 func initKafkaProducer() *kafka.Producer {
