@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	SignerService_SignTransaction_FullMethodName = "/signer.SignerService/SignTransaction"
+	SignerService_DeriveAddress_FullMethodName   = "/signer.SignerService/DeriveAddress"
 )
 
 // SignerServiceClient is the client API for SignerService service.
@@ -27,6 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SignerServiceClient interface {
 	SignTransaction(ctx context.Context, in *SignRequest, opts ...grpc.CallOption) (*SignResponse, error)
+	DeriveAddress(ctx context.Context, in *DeriveAddressRequest, opts ...grpc.CallOption) (*DeriveAddressResponse, error)
 }
 
 type signerServiceClient struct {
@@ -47,11 +49,22 @@ func (c *signerServiceClient) SignTransaction(ctx context.Context, in *SignReque
 	return out, nil
 }
 
+func (c *signerServiceClient) DeriveAddress(ctx context.Context, in *DeriveAddressRequest, opts ...grpc.CallOption) (*DeriveAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeriveAddressResponse)
+	err := c.cc.Invoke(ctx, SignerService_DeriveAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SignerServiceServer is the server API for SignerService service.
 // All implementations must embed UnimplementedSignerServiceServer
 // for forward compatibility.
 type SignerServiceServer interface {
 	SignTransaction(context.Context, *SignRequest) (*SignResponse, error)
+	DeriveAddress(context.Context, *DeriveAddressRequest) (*DeriveAddressResponse, error)
 	mustEmbedUnimplementedSignerServiceServer()
 }
 
@@ -64,6 +77,9 @@ type UnimplementedSignerServiceServer struct{}
 
 func (UnimplementedSignerServiceServer) SignTransaction(context.Context, *SignRequest) (*SignResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SignTransaction not implemented")
+}
+func (UnimplementedSignerServiceServer) DeriveAddress(context.Context, *DeriveAddressRequest) (*DeriveAddressResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeriveAddress not implemented")
 }
 func (UnimplementedSignerServiceServer) mustEmbedUnimplementedSignerServiceServer() {}
 func (UnimplementedSignerServiceServer) testEmbeddedByValue()                       {}
@@ -104,6 +120,24 @@ func _SignerService_SignTransaction_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SignerService_DeriveAddress_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeriveAddressRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SignerServiceServer).DeriveAddress(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SignerService_DeriveAddress_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SignerServiceServer).DeriveAddress(ctx, req.(*DeriveAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SignerService_ServiceDesc is the grpc.ServiceDesc for SignerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -114,6 +148,10 @@ var SignerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SignTransaction",
 			Handler:    _SignerService_SignTransaction_Handler,
+		},
+		{
+			MethodName: "DeriveAddress",
+			Handler:    _SignerService_DeriveAddress_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

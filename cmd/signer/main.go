@@ -25,28 +25,22 @@ type grpcServer struct {
 }
 
 func (s *grpcServer) SignTransaction(ctx context.Context, req *signpb.SignRequest) (*signpb.SignResponse, error) {
-	// 适配 proto -> internal req
-	ir := &signpb.SignRequest{
-		RequestId:   req.GetRequestId(),
-		WithdrawId:  req.GetWithdrawId(),
-		Chain:       req.GetChain(),
-		FromAddress: req.GetFromAddress(),
-		ToAddress:   req.GetToAddress(),
-		Amount:      req.GetAmount(),
-		UnsignedTx:  req.GetUnsignedTx(),
-		AuthToken:   req.GetAuthToken(),
-		Caller:      req.GetCaller(),
-	}
-
-	resp, err := s.svc.SignTransaction(ctx, ir)
+	resp, err := s.svc.SignTransaction(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-
 	return &signpb.SignResponse{
 		SignedTx: resp.SignedTx,
 		TxHash:   resp.TxHash,
 	}, nil
+}
+
+func (s *grpcServer) DeriveAddress(ctx context.Context, req *signpb.DeriveAddressRequest) (*signpb.DeriveAddressResponse, error) {
+	addr, err := s.svc.DeriveAddress(ctx, req.GetChain(), req.GetIndex())
+	if err != nil {
+		return nil, err
+	}
+	return &signpb.DeriveAddressResponse{Address: addr}, nil
 }
 
 func init() {
@@ -98,6 +92,7 @@ func initSignerService(rdc *redisx.Client) *signer.Service {
 	if len(authSecret) == 0 {
 		log.Fatal("SIGNER_AUTH_SECRET is required")
 	}
+	mnemonic := helpers.MustEnv("SIGNER_MNEMONIC")
 
 	chainID := helpers.MustBig(helpers.MustEnv("ETH_CHAIN_ID"))
 	evmSigner, err := provider.NewEVMLocalSigner(helpers.MustEnv("HOT_WALLET_PRIV"), chainID)
@@ -105,7 +100,7 @@ func initSignerService(rdc *redisx.Client) *signer.Service {
 		log.Fatalf("init evm local signer failed: %v", err)
 	}
 
-	return signer.NewService(rdc.RDB, evmSigner, authSecret)
+	return signer.NewService(rdc.RDB, evmSigner, authSecret, mnemonic)
 }
 
 func initListener() net.Listener {

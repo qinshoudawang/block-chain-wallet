@@ -7,12 +7,11 @@
 package signer
 
 import (
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
-
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -188,6 +187,102 @@ func (x *SignResponse) GetTxHash() string {
 	return ""
 }
 
+type DeriveAddressRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Chain         string                 `protobuf:"bytes,1,opt,name=chain,proto3" json:"chain,omitempty"`
+	Index         uint32                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeriveAddressRequest) Reset() {
+	*x = DeriveAddressRequest{}
+	mi := &file_proto_signer_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeriveAddressRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeriveAddressRequest) ProtoMessage() {}
+
+func (x *DeriveAddressRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_signer_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeriveAddressRequest.ProtoReflect.Descriptor instead.
+func (*DeriveAddressRequest) Descriptor() ([]byte, []int) {
+	return file_proto_signer_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *DeriveAddressRequest) GetChain() string {
+	if x != nil {
+		return x.Chain
+	}
+	return ""
+}
+
+func (x *DeriveAddressRequest) GetIndex() uint32 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+type DeriveAddressResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Address       string                 `protobuf:"bytes,1,opt,name=address,proto3" json:"address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeriveAddressResponse) Reset() {
+	*x = DeriveAddressResponse{}
+	mi := &file_proto_signer_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeriveAddressResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeriveAddressResponse) ProtoMessage() {}
+
+func (x *DeriveAddressResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_signer_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeriveAddressResponse.ProtoReflect.Descriptor instead.
+func (*DeriveAddressResponse) Descriptor() ([]byte, []int) {
+	return file_proto_signer_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *DeriveAddressResponse) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
 var File_proto_signer_proto protoreflect.FileDescriptor
 
 const file_proto_signer_proto_rawDesc = "" +
@@ -210,9 +305,15 @@ const file_proto_signer_proto_rawDesc = "" +
 	"\x06caller\x18\t \x01(\tR\x06caller\"D\n" +
 	"\fSignResponse\x12\x1b\n" +
 	"\tsigned_tx\x18\x01 \x01(\fR\bsignedTx\x12\x17\n" +
-	"\atx_hash\x18\x02 \x01(\tR\x06txHash2M\n" +
+	"\atx_hash\x18\x02 \x01(\tR\x06txHash\"B\n" +
+	"\x14DeriveAddressRequest\x12\x14\n" +
+	"\x05chain\x18\x01 \x01(\tR\x05chain\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\rR\x05index\"1\n" +
+	"\x15DeriveAddressResponse\x12\x18\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress2\x9b\x01\n" +
 	"\rSignerService\x12<\n" +
-	"\x0fSignTransaction\x12\x13.signer.SignRequest\x1a\x14.signer.SignResponseB\x15Z\x13proto/signer;signerb\x06proto3"
+	"\x0fSignTransaction\x12\x13.signer.SignRequest\x1a\x14.signer.SignResponse\x12L\n" +
+	"\rDeriveAddress\x12\x1c.signer.DeriveAddressRequest\x1a\x1d.signer.DeriveAddressResponseB\x15Z\x13proto/signer;signerb\x06proto3"
 
 var (
 	file_proto_signer_proto_rawDescOnce sync.Once
@@ -226,16 +327,20 @@ func file_proto_signer_proto_rawDescGZIP() []byte {
 	return file_proto_signer_proto_rawDescData
 }
 
-var file_proto_signer_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_proto_signer_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_proto_signer_proto_goTypes = []any{
-	(*SignRequest)(nil),  // 0: signer.SignRequest
-	(*SignResponse)(nil), // 1: signer.SignResponse
+	(*SignRequest)(nil),           // 0: signer.SignRequest
+	(*SignResponse)(nil),          // 1: signer.SignResponse
+	(*DeriveAddressRequest)(nil),  // 2: signer.DeriveAddressRequest
+	(*DeriveAddressResponse)(nil), // 3: signer.DeriveAddressResponse
 }
 var file_proto_signer_proto_depIdxs = []int32{
 	0, // 0: signer.SignerService.SignTransaction:input_type -> signer.SignRequest
-	1, // 1: signer.SignerService.SignTransaction:output_type -> signer.SignResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	2, // 1: signer.SignerService.DeriveAddress:input_type -> signer.DeriveAddressRequest
+	1, // 2: signer.SignerService.SignTransaction:output_type -> signer.SignResponse
+	3, // 3: signer.SignerService.DeriveAddress:output_type -> signer.DeriveAddressResponse
+	2, // [2:4] is the sub-list for method output_type
+	0, // [0:2] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -252,7 +357,7 @@ func file_proto_signer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_signer_proto_rawDesc), len(file_proto_signer_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

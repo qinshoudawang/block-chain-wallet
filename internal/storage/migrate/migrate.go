@@ -12,5 +12,7 @@ func All(db *gorm.DB) error {
 		&model.WithdrawOrder{},
 		&model.LedgerAccount{},
 		&model.LedgerFreeze{},
+		&model.HDWallet{},
+		&model.UserAddress{},
 	)
 }

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"wallet-system/internal/address"
 	"wallet-system/internal/api"
 	"wallet-system/internal/chain/evm"
 	"wallet-system/internal/clients"
@@ -22,6 +23,7 @@ import (
 	storagemigrate "wallet-system/internal/storage/migrate"
 	"wallet-system/internal/storage/repo"
 	"wallet-system/internal/withdraw"
+	signpb "wallet-system/proto/signer"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -46,8 +48,10 @@ func main() {
 	defer producer.Close()
 	eth := initEthClient()
 	defer eth.Close()
-	wsvc := initWithdrawService(rdc, eth, producer, db)
-	server := initHTTPServer(wsvc)
+	signerCli := initSignerClient()
+	wsvc := initWithdrawService(rdc, eth, producer, db, signerCli)
+	asvc := address.NewAddressService(db, signerCli)
+	server := initHTTPServer(wsvc, asvc)
 
 	if err := runHTTPServer(ctx, server); err != nil {
 		log.Fatal(err)
@@ -108,7 +112,16 @@ func initGorm() *gorm.DB {
 	return db
 }
 
-func initWithdrawService(rdc *redisx.Client, eth *ethclient.Client, producer *kafka.Producer, db *gorm.DB) *withdraw.Service {
+func initSignerClient() signpb.SignerServiceClient {
+	signerAddr := helpers.Getenv("SIGNER_GRPC_ADDR", "127.0.0.1:9001")
+	signerCli, err := clients.NewSignerClient(signerAddr)
+	if err != nil {
+		log.Fatalf("init signer client failed: %v", err)
+	}
+	return signerCli
+}
+
+func initWithdrawService(rdc *redisx.Client, eth *ethclient.Client, producer *kafka.Producer, db *gorm.DB, signerCli signpb.SignerServiceClient) *withdraw.Service {
 	chainIDStr := helpers.MustEnv("ETH_CHAIN_ID")
 	chainID, ok := new(big.Int).SetString(chainIDStr, 10)
 	if !ok {
@@ -118,12 +131,6 @@ func initWithdrawService(rdc *redisx.Client, eth *ethclient.Client, producer *ka
 	gasReserveWei, ok := new(big.Int).SetString(gasReserveWeiStr, 10)
 	if !ok || gasReserveWei.Sign() < 0 {
 		log.Fatalf("invalid WITHDRAW_GAS_RESERVE_WEI: %s", gasReserveWeiStr)
-	}
-
-	signerAddr := helpers.Getenv("SIGNER_GRPC_ADDR", "127.0.0.1:9001")
-	signerCli, err := clients.NewSignerClient(signerAddr)
-	if err != nil {
-		log.Fatalf("init signer client failed: %v", err)
 	}
 
 	return withdraw.NewService(withdraw.Config{
@@ -143,11 +150,11 @@ func initWithdrawService(rdc *redisx.Client, eth *ethclient.Client, producer *ka
 	}, producer)
 }
 
-func initHTTPServer(wsvc *withdraw.Service) *http.Server {
+func initHTTPServer(wsvc *withdraw.Service, asvc *address.AddressService) *http.Server {
 	addr := helpers.Getenv("API_ADDR", "127.0.0.1:8080")
 	return &http.Server{
 		Addr:    addr,
-		Handler: api.NewRouter(wsvc),
+		Handler: api.NewRouter(wsvc, asvc),
 	}
 }
 

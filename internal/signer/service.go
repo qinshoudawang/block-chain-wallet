@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"wallet-system/internal/auth/hmacauth"
+	"wallet-system/internal/signer/derivation"
 	"wallet-system/internal/signer/idempotency"
 	"wallet-system/internal/signer/policy"
 	"wallet-system/internal/signer/provider"
@@ -26,15 +27,22 @@ type Service struct {
 	policy     *policy.PolicyEngine
 	provider   provider.SignerProvider
 	authSecret []byte
+	deriver    *derivation.Deriver
 }
 
-func NewService(rdb *redis.Client, p provider.SignerProvider, authSecret []byte) *Service {
+func NewService(rdb *redis.Client, p provider.SignerProvider, authSecret []byte, mnemonic string) *Service {
+	deriver, err := derivation.NewDeriver(mnemonic)
+	if err != nil {
+		log.Fatal("init address deriver failed")
+		return nil
+	}
 	return &Service{
 		rdb:        rdb,
 		guard:      idempotency.New(rdb, 30*time.Minute),
 		policy:     policy.NewPolicyEngine(),
 		provider:   p,
 		authSecret: authSecret,
+		deriver:    deriver,
 	}
 }
 
@@ -88,4 +96,12 @@ func (s *Service) SignTransaction(ctx context.Context, req *signpb.SignRequest) 
 	}
 
 	return &signpb.SignResponse{SignedTx: signed}, nil
+}
+
+func (s *Service) DeriveAddress(ctx context.Context, chain string, index uint32) (string, error) {
+	_ = ctx
+	if s.deriver == nil {
+		return "", errors.New("deriver not configured")
+	}
+	return s.deriver.DeriveAddress(chain, index)
 }

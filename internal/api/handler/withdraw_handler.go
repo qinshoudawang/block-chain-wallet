@@ -30,6 +30,13 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 	}
 	log.Printf("[withdraw-handler] request parsed chain_id=%s to=%s amount=%s", req.ChainId, req.To, req.Amount)
 
+	canonicalChain, err := h.svc.MatchRequestChain(req.ChainId)
+	if err != nil {
+		log.Printf("[withdraw-handler] invalid chain_id req_chain=%s err=%v", req.ChainId, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chain_id"})
+		return
+	}
+
 	// 获取签名
 	resp, err := h.svc.CreateAndSignWithdraw(c.Request.Context(), withdraw.WithdrawInput{
 		To:     req.To,
@@ -44,7 +51,7 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 	log.Printf("[withdraw-handler] create/sign success withdraw_id=%s request_id=%s nonce=%d", resp.WithdrawID, resp.RequestID, resp.Nonce)
 
 	// 异步广播
-	key := req.ChainId + ":" + resp.From
+	key := canonicalChain + ":" + resp.From
 	taskBytes, err := json.Marshal(resp)
 	if err != nil {
 		log.Printf("[withdraw-handler] marshal task failed withdraw_id=%s request_id=%s err=%v", resp.WithdrawID, resp.RequestID, err)

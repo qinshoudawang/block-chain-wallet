@@ -1,6 +1,1 @@
 .env
-
-# Go build outputs (project-local binaries)
-/signer
-/withdraw
-/broadcaster

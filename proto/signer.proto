@@ -6,6 +6,7 @@ option go_package = "proto/signer;signer";
 
 service SignerService {
   rpc SignTransaction(SignRequest) returns (SignResponse);
+  rpc DeriveAddress(DeriveAddressRequest) returns (DeriveAddressResponse);
 }
 
 message SignRequest {
@@ -34,4 +35,13 @@ message SignRequest {
 message SignResponse {
   bytes signed_tx = 1;     // RLP of signed tx
   string tx_hash = 2;      // optional: signer can compute after signing
+}
+
+message DeriveAddressRequest {
+  string chain = 1;
+  uint32 index = 2;
+}
+
+message DeriveAddressResponse {
+  string address = 1;
 }

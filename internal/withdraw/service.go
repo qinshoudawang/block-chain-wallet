@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"wallet-system/internal/chain/evm"
+	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
 	"wallet-system/internal/storage/model"
@@ -72,6 +73,21 @@ func NewService(cfg Config, deps Deps, producer *kafka.Producer) *Service {
 		auth:     NewAuthSigner(cfg.AuthSecret),
 		Producer: producer,
 	}
+}
+
+func (s *Service) MatchRequestChain(chain string) (string, error) {
+	reqSpec, err := helpers.ResolveChainSpec(chain)
+	if err != nil {
+		return "", err
+	}
+	cfgSpec, err := helpers.ResolveChainSpec(s.cfg.Chain)
+	if err != nil {
+		return "", err
+	}
+	if reqSpec.CanonicalChain != cfgSpec.CanonicalChain {
+		return "", errors.New("chain mismatch")
+	}
+	return reqSpec.CanonicalChain, nil
 }
 
 type WithdrawInput struct {

@@ -1,27 +1,33 @@
-# TODO
-1. 地址生成（HD Wallet）
-2. 充值监听（扫描区块）
-3. 账本系统（余额/冻结）
-4. 提现系统（风控）
-5. 签名系统（我们现在做的）
-6. 交易广播
-7. 多链支持 solana
+### Address Service（用户钱包入口）
 
-# 调用链
-withdraw-api
-  1) 冻结账本
-  2) NonceManager.allocate(chain, from)
-  3) TxBuilder.buildUnsignedTx(nonce,...)
-  4) msg = CanonicalMessage(withdraw_id, chain, from, to, amount, nonce, hash(unsignedTx), request_id)
-  5) auth_token = KMS.GenerateMac(key_id, msg)
-  6) 调 signer.Sign(unsignedTx, msg, auth_token, ...)
-  7) sender.Broadcast(signedTx)
-  8) 更新提现状态
+HD 地址分配（记录 user_id -> derivation index -> address）
 
-signer（窄职责）
-  1) Redis 幂等 request_id
-  2) policy 校验（白名单/限额）
-  3) KMS.VerifyMac(key_id, msg, auth_token)  ✅
-  4) provider.Sign(unsignedTx)（本地私钥/未来换 HSM/MPC）
-  5) 审计日志
-  6) 返回 signedTx
+### Deposit Scanner（充值监听）
+
+扫块/订阅 logs → 匹配用户地址 → 写 deposits → 调 Ledger 入账
+
+### Ledger Service（账本）
+
+余额、冻结、流水、幂等入账
+
+### Withdraw Orchestrator（提现编排）
+
+风控/审批、冻结余额、分配 nonce、构造 unsigned tx、调用 signer、落库、发 Kafka
+
+### Signer Service（安全域：窄职责）
+
+幂等、防重放、policy 校验、HMAC 授权验真、签名
+
+可插拔后端：Local → KMS/HSM/MPC/TEE
+
+### Tx Broadcaster / Replayer / Confirmer（异步执行器）
+
+消费 tx.broadcast.v1、广播、多 RPC fallback、错误分类、写重试计划
+
+### Sweep Service（归集）
+
+把用户地址余额归集到热钱包（复用 TxBuilder + Signer + Kafka）
+
+### Key Manager（KMS/HSM/MPC/TEE）
+
+密钥材料/派生/签名在安全硬件或受控环境
