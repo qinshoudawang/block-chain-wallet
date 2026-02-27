@@ -30,18 +30,25 @@ func RunReplayer(ctx context.Context, wr *repo.WithdrawRepo, prod *kafka.Produce
 					continue
 				}
 
+				signedPayload := o.SignedPayload
+				signedPayloadEncoding := o.SignedPayloadEncoding
+				if signedPayloadEncoding == "" {
+					signedPayloadEncoding = SignedPayloadEncodingHex
+				}
 				task := BroadcastTask{
-					Version:     1,
-					WithdrawID:  o.WithdrawID,
-					RequestID:   o.RequestID,
-					Chain:       o.Chain,
-					From:        o.FromAddr,
-					To:          o.ToAddr,
-					Amount:      o.Amount,
-					Nonce:       o.Nonce,
-					SignedTxHex: o.SignedTxHex,
-					CreatedAt:   time.Now().Unix(),
-					Attempt:     o.RetryCount,
+					Version:               1,
+					WithdrawID:            o.WithdrawID,
+					RequestID:             o.RequestID,
+					Chain:                 o.Chain,
+					From:                  o.FromAddr,
+					To:                    o.ToAddr,
+					Amount:                o.Amount,
+					Nonce:                 o.Nonce,
+					SignedPayload:         signedPayload,
+					SignedPayloadEncoding: signedPayloadEncoding,
+					ChainMetaJSON:         o.ChainMetaJSON,
+					CreatedAt:             time.Now().Unix(),
+					Attempt:               o.RetryCount,
 				}
 				b, _ := json.Marshal(task)
 				_ = prod.Publish(ctx, o.WithdrawID, b)

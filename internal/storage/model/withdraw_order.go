@@ -19,14 +19,15 @@ type WithdrawOrder struct {
 	WithdrawID string `gorm:"type:varchar(64);not null;uniqueIndex:uk_withdraw_id"`
 	RequestID  string `gorm:"type:varchar(64);not null;uniqueIndex:uk_request_id"`
 
-	Chain    string `gorm:"type:varchar(32);not null;index:idx_chain_status,priority:1"`
-	FromAddr string `gorm:"type:varchar(64);not null;uniqueIndex:uk_chain_from_nonce,priority:2"`
-	ToAddr   string `gorm:"type:varchar(64);not null"`
-	Amount   string `gorm:"type:varchar(80);not null"`
-	Nonce    uint64 `gorm:"not null;uniqueIndex:uk_chain_from_nonce,priority:3"`
+	Chain    string  `gorm:"type:varchar(32);not null;index:idx_chain_status,priority:1"`
+	FromAddr string  `gorm:"type:varchar(64);not null;uniqueIndex:uk_chain_from_nonce,priority:2"`
+	ToAddr   string  `gorm:"type:varchar(64);not null"`
+	Amount   string  `gorm:"type:varchar(80);not null"`
+	Nonce    *uint64 `gorm:"uniqueIndex:uk_chain_from_nonce,priority:3"`
 
-	SignedTxHex  string `gorm:"type:text"`
-	SignedTxHash string `gorm:"type:varchar(64);index"`
+	SignedPayload         string `gorm:"type:text"`
+	SignedPayloadEncoding string `gorm:"type:varchar(16);not null;default:'hex'"`
+	ChainMetaJSON         string `gorm:"type:text"`
 
 	TxHash string `gorm:"type:varchar(80);index"`
 

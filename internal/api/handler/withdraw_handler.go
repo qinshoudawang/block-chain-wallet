@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -49,7 +50,7 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	log.Printf("[withdraw-handler] create/sign success withdraw_id=%s request_id=%s nonce=%d", resp.WithdrawID, resp.RequestID, resp.Nonce)
+	log.Printf("[withdraw-handler] create/sign success withdraw_id=%s request_id=%s nonce=%s", resp.WithdrawID, resp.RequestID, nonceForLog(resp.Nonce))
 
 	// 异步广播
 	key := canonicalChain + ":" + resp.From
@@ -73,4 +74,11 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 		Nonce:      resp.Nonce,
 		Status:     dto.WithdrawStatusSignedEnqueued,
 	})
+}
+
+func nonceForLog(v *uint64) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d", *v)
 }

@@ -15,6 +15,6 @@ type WithdrawRequest struct {
 type WithdrawResponse struct {
 	WithdrawID string         `json:"withdraw_id"`
 	RequestID  string         `json:"request_id"`
-	Nonce      uint64         `json:"nonce"`
+	Nonce      *uint64        `json:"nonce,omitempty"`
 	Status     WithdrawStatus `json:"status"`
 }

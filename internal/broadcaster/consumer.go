@@ -2,7 +2,11 @@ package broadcaster
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 	"wallet-system/internal/broadcaster/chainclient"
@@ -58,7 +62,7 @@ func RunConsumer(ctx context.Context, withdrawRepo *repo.WithdrawRepo, clients *
 			_ = consumer.Reader.CommitMessages(ctx, msg)
 			continue
 		}
-		log.Printf("message received topic=%s partition=%d offset=%d withdraw=%s req=%s nonce=%d", consumer.Topic, msg.Partition, msg.Offset, task.WithdrawID, task.RequestID, task.Nonce)
+		log.Printf("message received topic=%s partition=%d offset=%d withdraw=%s req=%s nonce=%s", consumer.Topic, msg.Partition, msg.Offset, task.WithdrawID, task.RequestID, nonceForLog(task.Nonce))
 
 		chain, cli, err := clients.Resolve(task.Chain)
 		if err != nil {
@@ -69,7 +73,9 @@ func RunConsumer(ctx context.Context, withdrawRepo *repo.WithdrawRepo, clients *
 			_ = consumer.Reader.CommitMessages(ctx, msg)
 			continue
 		}
-		txHash, err := broadcastWithRetry(ctx, cli, task.SignedTxHex)
+		signedPayload := task.SignedPayload
+		signedEncoding := task.SignedPayloadEncoding
+		txHash, err := broadcastWithRetry(ctx, cli, signedPayload, signedEncoding)
 		if err != nil {
 			task.Attempt++
 			if task.Attempt > maxRetry {
@@ -88,7 +94,7 @@ func RunConsumer(ctx context.Context, withdrawRepo *repo.WithdrawRepo, clients *
 			continue
 		}
 
-		log.Printf("broadcast ok chain=%s withdraw=%s req=%s tx=%s nonce=%d", chain, task.WithdrawID, task.RequestID, txHash, task.Nonce)
+		log.Printf("broadcast ok chain=%s withdraw=%s req=%s tx=%s nonce=%s", chain, task.WithdrawID, task.RequestID, txHash, nonceForLog(task.Nonce))
 		if _, dbErr := withdrawRepo.MarkBroadcasted(ctx, task.WithdrawID, txHash); dbErr != nil {
 			log.Printf("mark broadcasted failed withdraw=%s tx=%s err=%v", task.WithdrawID, txHash, dbErr)
 		}
@@ -96,7 +102,7 @@ func RunConsumer(ctx context.Context, withdrawRepo *repo.WithdrawRepo, clients *
 	}
 }
 
-func broadcastWithRetry(ctx context.Context, cli chainclient.Client, signedHex string) (string, error) {
+func broadcastWithRetry(ctx context.Context, cli chainclient.Client, signedPayload string, encoding string) (string, error) {
 	backoffs := []time.Duration{0, 300 * time.Millisecond, 800 * time.Millisecond}
 	var last error
 	for _, b := range backoffs {
@@ -107,6 +113,10 @@ func broadcastWithRetry(ctx context.Context, cli chainclient.Client, signedHex s
 			case <-time.After(b):
 			}
 		}
+		signedHex, err := normalizeSignedPayloadHex(signedPayload, encoding)
+		if err != nil {
+			return "", err
+		}
 		h, err := cli.BroadcastSignedTxHex(ctx, signedHex)
 		if err == nil {
 			return h, nil
@@ -114,4 +124,26 @@ func broadcastWithRetry(ctx context.Context, cli chainclient.Client, signedHex s
 		last = err
 	}
 	return "", last
+}
+
+func nonceForLog(v *uint64) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+func normalizeSignedPayloadHex(payload string, encoding string) (string, error) {
+	switch encoding {
+	case "", SignedPayloadEncodingHex:
+		return payload, nil
+	case SignedPayloadEncodingBase64:
+		raw, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(raw), nil
+	default:
+		return "", errors.New("unsupported signed payload encoding")
+	}
 }

@@ -2,6 +2,7 @@ package withdraw
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"log"
@@ -170,25 +171,32 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 	}
 	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s nonce=%d signed_size=%d", chain, withdrawID, requestID, nv, len(sresp.SignedTx))
 
-	signedTxHex := hex.EncodeToString(sresp.SignedTx)
-	if err := s.insertSignedOrder(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, nv, signedTxHex); err != nil {
+	signedPayload, signedPayloadEncoding, err := encodeSignedPayload(chain, sresp.SignedTx)
+	if err != nil {
+		log.Printf("[withdraw-service] encode signed payload failed chain=%s withdraw_id=%s request_id=%s err=%v", chain, withdrawID, requestID, err)
+		return nil, err
+	}
+	var noncePtr *uint64 = &nv
+	if err := s.insertSignedOrder(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, noncePtr, signedPayload, signedPayloadEncoding, ""); err != nil {
 		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", chain, withdrawID, requestID, nv, err)
 		return nil, err
 	}
 	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s nonce=%d", chain, withdrawID, requestID, nv)
 
 	return &broadcaster.BroadcastTask{
-		Version:     1,
-		WithdrawID:  withdrawID,
-		RequestID:   requestID,
-		Chain:       chain,
-		From:        profile.From.Hex(),
-		To:          toAddr,
-		Amount:      in.Amount,
-		Nonce:       nv,
-		SignedTxHex: signedTxHex,
-		CreatedAt:   time.Now().Unix(),
-		Attempt:     0,
+		Version:               1,
+		WithdrawID:            withdrawID,
+		RequestID:             requestID,
+		Chain:                 chain,
+		From:                  profile.From.Hex(),
+		To:                    toAddr,
+		Amount:                in.Amount,
+		Nonce:                 noncePtr,
+		SignedPayload:         signedPayload,
+		SignedPayloadEncoding: signedPayloadEncoding,
+		ChainMetaJSON:         "",
+		CreatedAt:             time.Now().Unix(),
+		Attempt:               0,
 	}, nil
 }
 
@@ -234,20 +242,23 @@ func (s *Service) insertSignedOrder(
 	requestID string,
 	toAddr string,
 	amount string,
-	nonce uint64,
-	signedTxHex string,
+	nonce *uint64,
+	signedPayload string,
+	signedPayloadEncoding string,
+	chainMetaJSON string,
 ) error {
 	return s.deps.Withdraw.InsertSigned(ctx, &model.WithdrawOrder{
-		WithdrawID:   withdrawID,
-		RequestID:    requestID,
-		Chain:        chain,
-		FromAddr:     profile.From.Hex(),
-		ToAddr:       toAddr,
-		Amount:       amount,
-		Nonce:        nonce,
-		SignedTxHex:  signedTxHex,
-		SignedTxHash: "",
-		TxHash:       "",
+		WithdrawID:            withdrawID,
+		RequestID:             requestID,
+		Chain:                 chain,
+		FromAddr:              profile.From.Hex(),
+		ToAddr:                toAddr,
+		Amount:                amount,
+		Nonce:                 nonce,
+		SignedPayload:         signedPayload,
+		SignedPayloadEncoding: signedPayloadEncoding,
+		ChainMetaJSON:         chainMetaJSON,
+		TxHash:                "",
 	})
 }
 
@@ -318,4 +329,19 @@ func (s *Service) resolveChainContext(chain string) (string, ChainProfile, chain
 		return "", ChainProfile{}, nil, err
 	}
 	return spec.CanonicalChain, profile, cli, nil
+}
+
+func encodeSignedPayload(chain string, signedTx []byte) (payload string, encoding string, err error) {
+	spec, err := helpers.ResolveChainSpec(chain)
+	if err != nil {
+		return "", "", err
+	}
+	switch spec.Family {
+	case "evm", "btc":
+		return hex.EncodeToString(signedTx), broadcaster.SignedPayloadEncodingHex, nil
+	case "sol":
+		return base64.StdEncoding.EncodeToString(signedTx), broadcaster.SignedPayloadEncodingBase64, nil
+	default:
+		return "", "", errors.New("unsupported chain family for signed payload encoding")
+	}
 }
