@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"time"
 
+	auth "wallet-system/internal/auth"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
@@ -50,10 +51,10 @@ type RiskApprover interface {
 }
 
 type Service struct {
-	profiles map[string]ChainProfile
-	auth     *AuthSigner
-	deps     Deps
-	Producer *kafka.Producer
+	profiles   map[string]ChainProfile
+	authSecret []byte
+	deps       Deps
+	Producer   *kafka.Producer
 }
 
 func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, producer *kafka.Producer) *Service {
@@ -87,10 +88,10 @@ func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, 
 	}
 
 	return &Service{
-		profiles: normalizedProfiles,
-		auth:     NewAuthSigner(authSecret),
-		deps:     deps,
-		Producer: producer,
+		profiles:   normalizedProfiles,
+		authSecret: authSecret,
+		deps:       deps,
+		Producer:   producer,
 	}
 }
 
@@ -270,15 +271,15 @@ func (s *Service) signWithdraw(
 ) (*signpb.SignResponse, error) {
 	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", chain, withdrawID, requestID, profile.From.Hex(), toAddr, amount, len(unsignedTx))
 
-	authToken, _ := s.auth.MakeAuthToken(
-		withdrawID,
-		requestID,
-		chain,
-		profile.From.Hex(),
-		toAddr,
-		amount,
-		unsignedTx,
-	)
+	authToken := auth.MakeToken(s.authSecret, auth.TxPayload{
+		WithdrawID: withdrawID,
+		RequestID:  requestID,
+		Chain:      chain,
+		From:       profile.From.Hex(),
+		To:         toAddr,
+		Amount:     amount,
+		UnsignedTx: unsignedTx,
+	})
 
 	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

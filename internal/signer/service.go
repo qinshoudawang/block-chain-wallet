@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"time"
 
-	"wallet-system/internal/auth/hmacauth"
+	auth "wallet-system/internal/auth"
 	"wallet-system/internal/signer/derivation"
 	"wallet-system/internal/signer/idempotency"
 	"wallet-system/internal/signer/policy"
@@ -74,17 +74,15 @@ func (s *Service) SignTransaction(ctx context.Context, req *signpb.SignRequest) 
 	}
 
 	// 3) auth_token 验真（HMAC）
-	txHash := hmacauth.SHA256Hex(req.UnsignedTx)
-	msg := hmacauth.CanonicalMessage(hmacauth.Payload{
-		WithdrawID:     req.WithdrawId,
-		RequestID:      req.RequestId,
-		Chain:          req.Chain,
-		From:           req.FromAddress,
-		To:             req.ToAddress,
-		Amount:         req.Amount,
-		UnsignedTxHash: txHash,
-	})
-	if !hmacauth.VerifyHex(s.authSecret, msg, req.AuthToken) {
+	if !auth.VerifyToken(s.authSecret, auth.TxPayload{
+		WithdrawID: req.WithdrawId,
+		RequestID:  req.RequestId,
+		Chain:      req.Chain,
+		From:       req.FromAddress,
+		To:         req.ToAddress,
+		Amount:     req.Amount,
+		UnsignedTx: req.UnsignedTx,
+	}, req.AuthToken) {
 		return nil, ErrAuthFailed
 	}
 

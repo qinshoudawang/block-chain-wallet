@@ -1,34 +1,10 @@
-package hmacauth
+package hmac
 
 import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"strings"
 )
-
-type Payload struct {
-	WithdrawID     string
-	RequestID      string
-	Chain          string
-	From           string
-	To             string
-	Amount         string
-	UnsignedTxHash string // hex string of sha256(unsigned_tx) or keccak; choose one and fix
-}
-
-func CanonicalMessage(p Payload) string {
-	parts := []string{
-		p.WithdrawID,
-		p.RequestID,
-		strings.ToLower(p.Chain),
-		strings.ToLower(p.From),
-		strings.ToLower(p.To),
-		p.Amount,
-		strings.ToLower(p.UnsignedTxHash),
-	}
-	return strings.Join(parts, "|")
-}
 
 // SignHex returns hex(hmac_sha256(secret, message))
 func SignHex(secret []byte, message string) string {
