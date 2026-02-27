@@ -8,7 +8,6 @@ import (
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/storage/repo"
-	"wallet-system/internal/withdraw"
 )
 
 func RunReplayer(ctx context.Context, wr *repo.WithdrawRepo, prod *kafka.Producer) {
@@ -31,7 +30,7 @@ func RunReplayer(ctx context.Context, wr *repo.WithdrawRepo, prod *kafka.Produce
 					continue
 				}
 
-				task := withdraw.BroadcastTask{
+				task := BroadcastTask{
 					Version:     1,
 					WithdrawID:  o.WithdrawID,
 					RequestID:   o.RequestID,

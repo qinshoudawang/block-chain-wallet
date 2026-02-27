@@ -9,6 +9,7 @@ import (
 	"time"
 
 	auth "wallet-system/internal/auth"
+	"wallet-system/internal/broadcaster"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
@@ -109,7 +110,7 @@ type WithdrawInput struct {
 	Amount string // wei decimal
 }
 
-func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (task *BroadcastTask, err error) {
+func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (task *broadcaster.BroadcastTask, err error) {
 	chain, profile, chainClient, err := s.resolveChainContext(in.Chain)
 	if err != nil {
 		return nil, err
@@ -176,7 +177,7 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 	}
 	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s nonce=%d", chain, withdrawID, requestID, nv)
 
-	return &BroadcastTask{
+	return &broadcaster.BroadcastTask{
 		Version:     1,
 		WithdrawID:  withdrawID,
 		RequestID:   requestID,

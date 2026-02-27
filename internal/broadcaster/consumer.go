@@ -9,7 +9,6 @@ import (
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/storage/repo"
-	"wallet-system/internal/withdraw"
 
 	kafkago "github.com/segmentio/kafka-go"
 )
@@ -52,7 +51,7 @@ func RunConsumer(ctx context.Context, withdrawRepo *repo.WithdrawRepo, clients *
 			continue
 		}
 
-		var task withdraw.BroadcastTask
+		var task BroadcastTask
 		if err := json.Unmarshal(msg.Value, &task); err != nil {
 			log.Printf("bad message, send to dlq: %v", err)
 			_ = consumer.Dlq.Publish(ctx, string(msg.Key), msg.Value)

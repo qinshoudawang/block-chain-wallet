@@ -1,4 +1,4 @@
-package withdraw
+package broadcaster
 
 type BroadcastTask struct {
 	Version     int    `json:"version"`
