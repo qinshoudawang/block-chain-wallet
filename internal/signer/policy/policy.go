@@ -3,7 +3,7 @@ package policy
 import (
 	"errors"
 	"math/big"
-	"os"
+	"wallet-system/internal/helpers"
 )
 
 type PolicyEngine struct {
@@ -15,7 +15,7 @@ func NewPolicyEngine() *PolicyEngine {
 	return &PolicyEngine{
 		MaxAmount: big.NewInt(1000000000000000000), // 1 ETH
 		WhiteList: map[string]bool{
-			os.Getenv("TO_ADDRESS"): true,
+			helpers.Getenv("ETH_TO_ADDRESS", ""): true,
 		},
 	}
 }

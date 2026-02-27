@@ -19,7 +19,6 @@ import (
 	"wallet-system/internal/withdraw/chainclient"
 	signpb "wallet-system/proto/signer"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -34,7 +33,7 @@ type Deps struct {
 }
 
 type ChainProfile struct {
-	From          common.Address
+	FromAddress   string
 	ChainID       *big.Int
 	FreezeReserve *big.Int // optional extra reserve in smallest unit; nil/0 means none
 }
@@ -82,6 +81,9 @@ func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, 
 		if err != nil {
 			panic(err)
 		}
+		if p.FromAddress == "" {
+			panic("from address is required for chain: " + spec.CanonicalChain)
+		}
 		canonical := spec.CanonicalChain
 		if _, exists := normalizedProfiles[canonical]; exists {
 			panic("duplicate chain profile: " + canonical)
@@ -116,19 +118,20 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[withdraw-service] create/sign start chain=%s from=%s to=%s amount=%s", chain, profile.From.Hex(), in.To, in.Amount)
+	fromAddr := profile.FromAddress
+	log.Printf("[withdraw-service] create/sign start chain=%s from=%s to=%s amount=%s", chain, fromAddr, in.To, in.Amount)
 
-	validatedIn, err := chainClient.ValidateWithdrawInput(in.To, in.Amount)
+	// 1) Validate chain-specific input and normalize address/amount.
+	toAddr, amt, err := chainClient.ValidateWithdrawInput(chain, in.To, in.Amount)
 	if err != nil {
-		log.Printf("[withdraw-service] validate input failed chain=%s from=%s to=%s amount=%s err=%v", chain, profile.From.Hex(), in.To, in.Amount, err)
+		log.Printf("[withdraw-service] validate input failed chain=%s from=%s to=%s amount=%s err=%v", chain, fromAddr, in.To, in.Amount, err)
 		return nil, err
 	}
-	toAddr := validatedIn.ToAddress()
-	amt := validatedIn.AmountValue()
 
 	withdrawID := uuid.NewString()
 	requestID := uuid.NewString()
 
+	// 2) Freeze ledger balance first and run risk approval before signing.
 	if err := s.freezeAndApprove(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, amt); err != nil {
 		log.Printf("[withdraw-service] precheck failed chain=%s withdraw_id=%s request_id=%s err=%v", chain, withdrawID, requestID, err)
 		return nil, err
@@ -142,53 +145,44 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		}
 	}()
 
-	lockKey := "lock:nonce:" + chain + ":" + profile.From.Hex()
-	lock := redisx.NewLock(s.deps.Redis, lockKey, 8*time.Second)
-	if err := lock.TryLock(ctx); err != nil {
-		log.Printf("[withdraw-service] nonce lock busy chain=%s from=%s err=%v", chain, profile.From.Hex(), err)
-		return nil, errors.New("busy")
-	}
-	defer func() { _ = lock.Unlock(context.Background()) }()
-
-	nv, err := chainClient.AllocateNonce(ctx, s.chainRuntime(chain, profile), func(ctx context.Context) (uint64, error) {
-		return s.deps.Withdraw.NextNonceFloor(ctx, chain, profile.From.Hex())
-	})
+	// 3) Allocate nonce for nonce-based chains (e.g. EVM) under a short lock.
+	nonce, noncePtr, unlockNonce, err := s.allocateNonceIfNeeded(ctx, chain, profile, chainClient)
 	if err != nil {
-		log.Printf("[withdraw-service] nonce allocate failed chain=%s from=%s err=%v", chain, profile.From.Hex(), err)
-		return nil, errors.New("nonce allocate failed")
+		return nil, err
+	}
+	if unlockNonce != nil {
+		defer unlockNonce()
 	}
 
-	unsignedTx, err := chainClient.BuildUnsignedWithdrawTx(ctx, s.chainRuntime(chain, profile), validatedIn, nv)
+	// 4) Build chain-specific unsigned transaction payload.
+	unsignedTx, err := chainClient.BuildUnsignedWithdrawTx(ctx, s.chainRuntime(chain, profile), toAddr, amt, nonce)
 	if err != nil {
-		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s nonce=%d err=%v", chain, profile.From.Hex(), toAddr, nv, err)
+		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s nonce=%s err=%v", chain, fromAddr, toAddr, nonceForLog(noncePtr), err)
 		return nil, err
 	}
 
+	// 5) Request signer service to sign the payload.
 	sresp, err := s.signWithdraw(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, unsignedTx)
 	if err != nil {
-		log.Printf("[withdraw-service] sign withdraw failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", chain, withdrawID, requestID, nv, err)
+		log.Printf("[withdraw-service] sign withdraw failed chain=%s withdraw_id=%s request_id=%s nonce=%s err=%v", chain, withdrawID, requestID, nonceForLog(noncePtr), err)
 		return nil, err
 	}
-	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s nonce=%d signed_size=%d", chain, withdrawID, requestID, nv, len(sresp.SignedTx))
+	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s nonce=%s signed_size=%d", chain, withdrawID, requestID, nonceForLog(noncePtr), len(sresp.SignedTx))
 
-	signedPayload, signedPayloadEncoding, err := encodeSignedPayload(chain, sresp.SignedTx)
+	// 6) Persist signed order and return task for broadcaster enqueue.
+	signedPayload, signedPayloadEncoding, err := s.insertSignedOrder(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, noncePtr, sresp.SignedTx, "")
 	if err != nil {
-		log.Printf("[withdraw-service] encode signed payload failed chain=%s withdraw_id=%s request_id=%s err=%v", chain, withdrawID, requestID, err)
+		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s nonce=%s err=%v", chain, withdrawID, requestID, nonceForLog(noncePtr), err)
 		return nil, err
 	}
-	var noncePtr *uint64 = &nv
-	if err := s.insertSignedOrder(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, noncePtr, signedPayload, signedPayloadEncoding, ""); err != nil {
-		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s nonce=%d err=%v", chain, withdrawID, requestID, nv, err)
-		return nil, err
-	}
-	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s nonce=%d", chain, withdrawID, requestID, nv)
+	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s nonce=%s", chain, withdrawID, requestID, nonceForLog(noncePtr))
 
 	return &broadcaster.BroadcastTask{
 		Version:               1,
 		WithdrawID:            withdrawID,
 		RequestID:             requestID,
 		Chain:                 chain,
-		From:                  profile.From.Hex(),
+		From:                  fromAddr,
 		To:                    toAddr,
 		Amount:                in.Amount,
 		Nonce:                 noncePtr,
@@ -214,7 +208,7 @@ func (s *Service) freezeAndApprove(
 	if profile.FreezeReserve != nil && profile.FreezeReserve.Sign() > 0 {
 		freezeAmount.Add(freezeAmount, profile.FreezeReserve)
 	}
-	if _, err := s.deps.Ledger.FreezeWithdraw(ctx, chain, profile.From.Hex(), withdrawID, freezeAmount); err != nil {
+	if _, err := s.deps.Ledger.FreezeWithdraw(ctx, chain, profile.FromAddress, withdrawID, freezeAmount); err != nil {
 		return err
 	}
 	if s.deps.Risk == nil {
@@ -224,7 +218,7 @@ func (s *Service) freezeAndApprove(
 		WithdrawID: withdrawID,
 		RequestID:  requestID,
 		Chain:      chain,
-		From:       profile.From.Hex(),
+		From:       profile.FromAddress,
 		To:         toAddr,
 		Amount:     amountStr,
 	})
@@ -243,15 +237,29 @@ func (s *Service) insertSignedOrder(
 	toAddr string,
 	amount string,
 	nonce *uint64,
-	signedPayload string,
-	signedPayloadEncoding string,
+	signedTx []byte,
 	chainMetaJSON string,
-) error {
-	return s.deps.Withdraw.InsertSigned(ctx, &model.WithdrawOrder{
+) (signedPayload string, signedPayloadEncoding string, err error) {
+	spec, err := helpers.ResolveChainSpec(chain)
+	if err != nil {
+		return "", "", err
+	}
+	switch spec.Family {
+	case "evm", "btc":
+		signedPayload = hex.EncodeToString(signedTx)
+		signedPayloadEncoding = broadcaster.SignedPayloadEncodingHex
+	case "sol":
+		signedPayload = base64.StdEncoding.EncodeToString(signedTx)
+		signedPayloadEncoding = broadcaster.SignedPayloadEncodingBase64
+	default:
+		return "", "", errors.New("unsupported chain family for signed payload encoding")
+	}
+
+	if err := s.deps.Withdraw.InsertSigned(ctx, &model.WithdrawOrder{
 		WithdrawID:            withdrawID,
 		RequestID:             requestID,
 		Chain:                 chain,
-		FromAddr:              profile.From.Hex(),
+		FromAddr:              profile.FromAddress,
 		ToAddr:                toAddr,
 		Amount:                amount,
 		Nonce:                 nonce,
@@ -259,16 +267,49 @@ func (s *Service) insertSignedOrder(
 		SignedPayloadEncoding: signedPayloadEncoding,
 		ChainMetaJSON:         chainMetaJSON,
 		TxHash:                "",
-	})
+	}); err != nil {
+		return "", "", err
+	}
+	return signedPayload, signedPayloadEncoding, nil
 }
 
 func (s *Service) chainRuntime(chain string, profile ChainProfile) chainclient.Runtime {
 	return chainclient.Runtime{
-		Redis:   s.deps.Redis,
-		Chain:   chain,
-		ChainID: profile.ChainID,
-		From:    profile.From,
+		Redis:       s.deps.Redis,
+		Chain:       chain,
+		ChainID:     profile.ChainID,
+		FromAddress: profile.FromAddress,
 	}
+}
+
+func (s *Service) allocateNonceIfNeeded(
+	ctx context.Context,
+	chain string,
+	profile ChainProfile,
+	chainClient chainclient.Client,
+) (nonce uint64, noncePtr *uint64, unlock func(), err error) {
+	if !chainClient.RequiresNonce() {
+		return 0, nil, nil, nil
+	}
+	fromAddr := profile.FromAddress
+	lockKey := "lock:nonce:" + chain + ":" + fromAddr
+	lock := redisx.NewLock(s.deps.Redis, lockKey, 8*time.Second)
+	if err := lock.TryLock(ctx); err != nil {
+		log.Printf("[withdraw-service] nonce lock busy chain=%s from=%s err=%v", chain, fromAddr, err)
+		return 0, nil, nil, errors.New("busy")
+	}
+	unlock = func() { _ = lock.Unlock(context.Background()) }
+
+	nonce, err = chainClient.AllocateNonce(ctx, s.chainRuntime(chain, profile), func(ctx context.Context) (uint64, error) {
+		return s.deps.Withdraw.NextNonceFloor(ctx, chain, fromAddr)
+	})
+	if err != nil {
+		log.Printf("[withdraw-service] nonce allocate failed chain=%s from=%s err=%v", chain, fromAddr, err)
+		unlock()
+		return 0, nil, nil, errors.New("nonce allocate failed")
+	}
+	noncePtr = &nonce
+	return nonce, noncePtr, unlock, nil
 }
 
 func (s *Service) signWithdraw(
@@ -281,13 +322,13 @@ func (s *Service) signWithdraw(
 	amount string,
 	unsignedTx []byte,
 ) (*signpb.SignResponse, error) {
-	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", chain, withdrawID, requestID, profile.From.Hex(), toAddr, amount, len(unsignedTx))
+	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", chain, withdrawID, requestID, profile.FromAddress, toAddr, amount, len(unsignedTx))
 
 	authToken := auth.MakeToken(s.authSecret, auth.TxPayload{
 		WithdrawID: withdrawID,
 		RequestID:  requestID,
 		Chain:      chain,
-		From:       profile.From.Hex(),
+		From:       profile.FromAddress,
 		To:         toAddr,
 		Amount:     amount,
 		UnsignedTx: unsignedTx,
@@ -300,7 +341,7 @@ func (s *Service) signWithdraw(
 		RequestId:   requestID,
 		WithdrawId:  withdrawID,
 		Chain:       chain,
-		FromAddress: profile.From.Hex(),
+		FromAddress: profile.FromAddress,
 		ToAddress:   toAddr,
 		Amount:      amount,
 		UnsignedTx:  unsignedTx,
@@ -313,6 +354,13 @@ func (s *Service) signWithdraw(
 	}
 	log.Printf("[withdraw-service] signer rpc success chain=%s withdraw_id=%s request_id=%s signed_size=%d", chain, withdrawID, requestID, len(resp.SignedTx))
 	return resp, nil
+}
+
+func nonceForLog(v *uint64) string {
+	if v == nil {
+		return "-"
+	}
+	return big.NewInt(0).SetUint64(*v).String()
 }
 
 func (s *Service) resolveChainContext(chain string) (string, ChainProfile, chainclient.Client, error) {
@@ -329,19 +377,4 @@ func (s *Service) resolveChainContext(chain string) (string, ChainProfile, chain
 		return "", ChainProfile{}, nil, err
 	}
 	return spec.CanonicalChain, profile, cli, nil
-}
-
-func encodeSignedPayload(chain string, signedTx []byte) (payload string, encoding string, err error) {
-	spec, err := helpers.ResolveChainSpec(chain)
-	if err != nil {
-		return "", "", err
-	}
-	switch spec.Family {
-	case "evm", "btc":
-		return hex.EncodeToString(signedTx), broadcaster.SignedPayloadEncodingHex, nil
-	case "sol":
-		return base64.StdEncoding.EncodeToString(signedTx), broadcaster.SignedPayloadEncodingBase64, nil
-	default:
-		return "", "", errors.New("unsupported chain family for signed payload encoding")
-	}
 }

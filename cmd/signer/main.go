@@ -103,7 +103,7 @@ func initSignerService(rdc *redisx.Client, evmNet config.EVMNetwork) *signer.Ser
 		log.Fatal("SIGNER_AUTH_SECRET is required")
 	}
 	mnemonic := helpers.MustEnv("SIGNER_MNEMONIC")
-	evmSigner, err := provider.NewEVMSigner(helpers.MustEnv("HOT_WALLET_PRIV"), evmNet.ChainID)
+	evmSigner, err := provider.NewEVMSigner(helpers.MustEnv("ETH_HOT_WALLET_PRIV"), evmNet.ChainID)
 	if err != nil {
 		log.Fatalf("init evm local signer failed: %v", err)
 	}

@@ -55,15 +55,15 @@ func LoadEVMNetworkFromEnv() (EVMNetwork, error) {
 }
 
 func LoadWithdrawProfileFromEnv() (WithdrawProfile, error) {
-	from := common.HexToAddress(helpers.Getenv("FROM_ADDRESS", ""))
+	from := common.HexToAddress(helpers.Getenv("ETH_FROM_ADDRESS", ""))
 	if from == (common.Address{}) {
-		return WithdrawProfile{}, errors.New("invalid FROM_ADDRESS")
+		return WithdrawProfile{}, errors.New("invalid ETH_FROM_ADDRESS")
 	}
 
-	gasReserveWeiStr := helpers.Getenv("WITHDRAW_GAS_RESERVE_WEI", "0")
+	gasReserveWeiStr := helpers.Getenv("ETH_WITHDRAW_GAS_RESERVE_WEI", "0")
 	gasReserveWei, ok := new(big.Int).SetString(gasReserveWeiStr, 10)
 	if !ok || gasReserveWei.Sign() < 0 {
-		return WithdrawProfile{}, errors.New("invalid WITHDRAW_GAS_RESERVE_WEI")
+		return WithdrawProfile{}, errors.New("invalid ETH_WITHDRAW_GAS_RESERVE_WEI")
 	}
 
 	return WithdrawProfile{
