@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"wallet-system/internal/config"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/redisx"
 	"wallet-system/internal/signer"
@@ -55,7 +56,8 @@ func main() {
 
 	rdc := initRedis(ctx)
 	defer rdc.RDB.Close()
-	svc := initSignerService(rdc)
+	evmNet := mustLoadEVMNetwork()
+	svc := initSignerService(rdc, evmNet)
 	lis := initListener()
 	defer lis.Close()
 	gs := initGRPCServer(svc)
@@ -87,21 +89,26 @@ func initRedis(ctx context.Context) *redisx.Client {
 	return rdc
 }
 
-func initSignerService(rdc *redisx.Client) *signer.Service {
+func mustLoadEVMNetwork() config.EVMNetwork {
+	evmNet, err := config.LoadEVMNetworkFromEnv()
+	if err != nil {
+		log.Fatalf("invalid evm network config: %v", err)
+	}
+	return evmNet
+}
+
+func initSignerService(rdc *redisx.Client, evmNet config.EVMNetwork) *signer.Service {
 	authSecret := []byte(helpers.MustEnv("SIGNER_AUTH_SECRET"))
 	if len(authSecret) == 0 {
 		log.Fatal("SIGNER_AUTH_SECRET is required")
 	}
 	mnemonic := helpers.MustEnv("SIGNER_MNEMONIC")
-	chain := helpers.MustEnv("ETH_CHAIN")
-
-	chainID := helpers.MustBig(helpers.MustEnv("ETH_CHAIN_ID"))
-	evmSigner, err := provider.NewEVMSigner(helpers.MustEnv("HOT_WALLET_PRIV"), chainID)
+	evmSigner, err := provider.NewEVMSigner(helpers.MustEnv("HOT_WALLET_PRIV"), evmNet.ChainID)
 	if err != nil {
 		log.Fatalf("init evm local signer failed: %v", err)
 	}
 	registry := provider.NewRegistry()
-	if err := registry.Register(chain, evmSigner); err != nil {
+	if err := registry.Register(evmNet.Chain, evmSigner); err != nil {
 		log.Fatalf("register signer provider failed: %v", err)
 	}
 

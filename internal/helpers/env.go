@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -16,7 +17,7 @@ func init() {
 }
 
 func Getenv(k, def string) string {
-	v := os.Getenv(k)
+	v := strings.TrimSpace(os.Getenv(k))
 	if v == "" {
 		return def
 	}
@@ -24,7 +25,7 @@ func Getenv(k, def string) string {
 }
 
 func MustEnv(k string) string {
-	v := os.Getenv(k)
+	v := strings.TrimSpace(os.Getenv(k))
 	if v == "" {
 		panic(k + " is required")
 	}

@@ -12,6 +12,7 @@ import (
 	"wallet-system/internal/broadcaster"
 	broadcasterchain "wallet-system/internal/broadcaster/chainclient"
 	"wallet-system/internal/chain/evm"
+	"wallet-system/internal/config"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	storagemigrate "wallet-system/internal/storage/migrate"
@@ -39,9 +40,10 @@ func main() {
 	defer producer.Close()
 	consumer := initKafkaConsumer()
 	defer consumer.Close()
-	sender := initEVMSender()
+	evmNet := mustLoadEVMNetwork()
+	sender := initEVMSender(evmNet.RPC)
 	defer sender.Close()
-	clients := initBroadcasterChainClients(sender)
+	clients := initBroadcasterChainClients(evmNet, sender)
 
 	go broadcaster.RunConsumer(ctx, withdrawRepo, clients, consumer)
 	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
@@ -79,8 +81,15 @@ func initGorm() *gorm.DB {
 	return db
 }
 
-func initEVMSender() *evm.EVMSender {
-	rpc := helpers.MustEnv("ETH_RPC")
+func mustLoadEVMNetwork() config.EVMNetwork {
+	evmNet, err := config.LoadEVMNetworkFromEnv()
+	if err != nil {
+		log.Fatalf("invalid evm network config: %v", err)
+	}
+	return evmNet
+}
+
+func initEVMSender(rpc string) *evm.EVMSender {
 	sender, err := evm.NewEVMSender(rpc)
 	if err != nil {
 		log.Fatalf("init sender failed: %v", err)
@@ -88,10 +97,9 @@ func initEVMSender() *evm.EVMSender {
 	return sender
 }
 
-func initBroadcasterChainClients(sender *evm.EVMSender) *broadcasterchain.Registry {
+func initBroadcasterChainClients(evmNet config.EVMNetwork, sender *evm.EVMSender) *broadcasterchain.Registry {
 	registry := broadcasterchain.NewRegistry()
-	chain := helpers.MustEnv("ETH_CHAIN")
-	if err := registry.Register(chain, broadcasterchain.NewEVMClient(sender)); err != nil {
+	if err := registry.Register(evmNet.Chain, broadcasterchain.NewEVMClient(sender)); err != nil {
 		log.Fatalf("register broadcaster chain client failed: %v", err)
 	}
 	return registry

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +14,7 @@ import (
 	"wallet-system/internal/address"
 	"wallet-system/internal/api"
 	"wallet-system/internal/clients"
+	"wallet-system/internal/config"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
@@ -25,7 +25,6 @@ import (
 	"wallet-system/internal/withdraw/chainclient"
 	signpb "wallet-system/proto/signer"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -46,11 +45,12 @@ func main() {
 	db := initGorm()
 	producer := initKafkaProducer()
 	defer producer.Close()
-	eth := initEthClient()
+	evmNet := mustLoadEVMNetwork()
+	eth := initEthClient(evmNet.RPC)
 	defer eth.Close()
 	signerCli := initSignerClient()
 	defer signerCli.Close()
-	wsvc := initWithdrawService(rdc, eth, producer, db, signerCli.Client)
+	wsvc := initWithdrawService(rdc, eth, evmNet, producer, db, signerCli.Client)
 	asvc := address.NewAddressService(db, signerCli.Client)
 	server := initHTTPServer(wsvc, asvc)
 
@@ -87,8 +87,16 @@ func initKafkaProducer() *kafka.Producer {
 	return kafka.NewProducer(brokers, topic)
 }
 
-func initEthClient() *ethclient.Client {
-	eth, err := ethclient.Dial(helpers.MustEnv("ETH_RPC"))
+func mustLoadEVMNetwork() config.EVMNetwork {
+	evmNet, err := config.LoadEVMNetworkFromEnv()
+	if err != nil {
+		log.Fatalf("invalid evm network config: %v", err)
+	}
+	return evmNet
+}
+
+func initEthClient(rpc string) *ethclient.Client {
+	eth, err := ethclient.Dial(rpc)
 	if err != nil {
 		log.Fatalf("init eth client failed: %v", err)
 	}
@@ -122,25 +130,18 @@ func initSignerClient() *clients.SignerClient {
 	return signerCli
 }
 
-func initWithdrawService(rdc *redisx.Client, eth *ethclient.Client, producer *kafka.Producer, db *gorm.DB, signerCli signpb.SignerServiceClient) *withdraw.Service {
-	chainIDStr := helpers.MustEnv("ETH_CHAIN_ID")
-	chainID, ok := new(big.Int).SetString(chainIDStr, 10)
-	if !ok {
-		log.Fatalf("invalid ETH_CHAIN_ID: %s", chainIDStr)
+func initWithdrawService(rdc *redisx.Client, eth *ethclient.Client, evmNet config.EVMNetwork, producer *kafka.Producer, db *gorm.DB, signerCli signpb.SignerServiceClient) *withdraw.Service {
+	profile, err := config.LoadWithdrawProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid withdraw profile config: %v", err)
 	}
-	gasReserveWeiStr := helpers.Getenv("WITHDRAW_GAS_RESERVE_WEI", "0")
-	gasReserveWei, ok := new(big.Int).SetString(gasReserveWeiStr, 10)
-	if !ok || gasReserveWei.Sign() < 0 {
-		log.Fatalf("invalid WITHDRAW_GAS_RESERVE_WEI: %s", gasReserveWeiStr)
-	}
-	chain := helpers.MustEnv("ETH_CHAIN")
 
 	return withdraw.NewService(
 		map[string]withdraw.ChainProfile{
-			chain: {
-				From:          common.HexToAddress(helpers.MustEnv("FROM_ADDRESS")),
-				ChainID:       chainID,
-				FreezeReserve: gasReserveWei,
+			evmNet.Chain: {
+				From:          profile.From,
+				ChainID:       evmNet.ChainID,
+				FreezeReserve: profile.FreezeReserve,
 			},
 		},
 		[]byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET")),
