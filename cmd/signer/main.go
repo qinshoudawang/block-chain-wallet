@@ -56,8 +56,8 @@ func main() {
 
 	rdc := initRedis(ctx)
 	defer rdc.RDB.Close()
-	evmNet := mustLoadEVMNetwork()
-	svc := initSignerService(rdc, evmNet)
+	profiles := buildChainProfiles()
+	svc := initSignerService(rdc, profiles)
 	lis := initListener()
 	defer lis.Close()
 	gs := initGRPCServer(svc)
@@ -89,30 +89,72 @@ func initRedis(ctx context.Context) *redisx.Client {
 	return rdc
 }
 
-func mustLoadEVMNetwork() config.EVMNetwork {
-	evmNet, err := config.LoadEVMNetworkFromEnv()
+func buildChainProfiles() map[string]config.ChainProfile {
+	profiles, err := config.LoadChainProfilesFromEnv()
 	if err != nil {
-		log.Fatalf("invalid evm network config: %v", err)
+		log.Fatalf("invalid chain profile config: %v", err)
 	}
-	return evmNet
+	return profiles
 }
 
-func initSignerService(rdc *redisx.Client, evmNet config.EVMNetwork) *signer.Service {
+func initSignerService(rdc *redisx.Client, profiles map[string]config.ChainProfile) *signer.Service {
 	authSecret := []byte(helpers.MustEnv("SIGNER_AUTH_SECRET"))
 	if len(authSecret) == 0 {
 		log.Fatal("SIGNER_AUTH_SECRET is required")
 	}
 	mnemonic := helpers.MustEnv("SIGNER_MNEMONIC")
-	evmSigner, err := provider.NewEVMSigner(helpers.MustEnv("ETH_HOT_WALLET_PRIV"), evmNet.ChainID)
-	if err != nil {
-		log.Fatalf("init evm local signer failed: %v", err)
-	}
 	registry := provider.NewRegistry()
-	if err := registry.Register(evmNet.Chain, evmSigner); err != nil {
-		log.Fatalf("register signer provider failed: %v", err)
-	}
+	registerEVMSignerProviders(registry, profiles)
+	registerBTCSignerProvider(registry, profiles)
 
 	return signer.NewService(rdc.RDB, registry, authSecret, mnemonic)
+}
+
+func registerEVMSignerProviders(registry *provider.Registry, profiles map[string]config.ChainProfile) {
+	priv := helpers.MustEnv("ETH_HOT_WALLET_PRIV")
+	for chain, p := range profiles {
+		spec, err := helpers.ResolveChainSpec(chain)
+		if err != nil {
+			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
+		}
+		if spec.Family != "evm" {
+			continue
+		}
+		if p.ChainID == nil {
+			log.Fatalf("evm chain id is required for chain=%s", chain)
+		}
+		evmSigner, err := provider.NewEVMSigner(priv, p.ChainID)
+		if err != nil {
+			log.Fatalf("init evm local signer failed chain=%s err=%v", chain, err)
+		}
+		if err := registry.Register(chain, evmSigner); err != nil {
+			log.Fatalf("register evm signer provider failed chain=%s err=%v", chain, err)
+		}
+	}
+}
+
+func registerBTCSignerProvider(registry *provider.Registry, profiles map[string]config.ChainProfile) {
+	priv := helpers.Getenv("BTC_HOT_WALLET_PRIV", "")
+	if priv == "" {
+		return
+	}
+
+	for chain := range profiles {
+		spec, err := helpers.ResolveChainSpec(chain)
+		if err != nil {
+			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
+		}
+		if spec.Family != "btc" {
+			continue
+		}
+		btcSigner, err := provider.NewBTCSigner(priv)
+		if err != nil {
+			log.Fatalf("init btc local signer failed chain=%s err=%v", chain, err)
+		}
+		if err := registry.Register(chain, btcSigner); err != nil {
+			log.Fatalf("register btc signer provider failed chain=%s err=%v", chain, err)
+		}
+	}
 }
 
 func initListener() net.Listener {

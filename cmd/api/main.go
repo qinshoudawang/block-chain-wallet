@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,8 +13,10 @@ import (
 
 	"wallet-system/internal/address"
 	"wallet-system/internal/api"
+	btcchain "wallet-system/internal/chain/btc"
 	"wallet-system/internal/clients"
 	"wallet-system/internal/config"
+	"wallet-system/internal/config/env"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
@@ -30,11 +31,6 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
-
-type evmRuntime struct {
-	net config.EVMNetwork
-	eth *ethclient.Client
-}
 
 func init() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -51,11 +47,11 @@ func main() {
 	db := initGorm()
 	producer := initKafkaProducer()
 	defer producer.Close()
-	evmrt := initEVMRuntime()
-	defer evmrt.eth.Close()
+	chainProfiles := buildChainProfiles()
 	signerCli := initSignerClient()
 	defer signerCli.Close()
-	wsvc := initWithdrawService(rdc, evmrt, producer, db, signerCli.Client)
+	wsvc, closeChainClients := initWithdrawService(rdc, chainProfiles, producer, db, signerCli.Client)
+	defer closeChainClients()
 	asvc := address.NewAddressService(db, signerCli.Client)
 	server := initHTTPServer(wsvc, asvc)
 
@@ -92,29 +88,37 @@ func initKafkaProducer() *kafka.Producer {
 	return kafka.NewProducer(brokers, topic)
 }
 
-func mustLoadEVMNetwork() config.EVMNetwork {
-	evmNet, err := config.LoadEVMNetworkFromEnv()
+func initEthClient() *ethclient.Client {
+	evmProf, err := env.LoadEVMProfileFromEnv()
 	if err != nil {
 		log.Fatalf("invalid evm network config: %v", err)
 	}
-	return evmNet
-}
-
-func initEthClient(evmNet config.EVMNetwork) *ethclient.Client {
-	eth, err := ethclient.Dial(evmNet.RPC)
+	eth, err := ethclient.Dial(evmProf.RPC)
 	if err != nil {
-		log.Fatalf("init eth client failed chain=%s rpc=%s err=%v", evmNet.Chain, evmNet.RPC, err)
+		log.Fatalf("init eth client failed chain=%s rpc=%s err=%v", evmProf.Chain, evmProf.RPC, err)
 	}
 	return eth
 }
 
-func initEVMRuntime() evmRuntime {
-	evmNet := mustLoadEVMNetwork()
-	eth := initEthClient(evmNet)
-	return evmRuntime{
-		net: evmNet,
-		eth: eth,
+func initBTCClient() *btcchain.Client {
+	btcProf, ok, err := env.LoadBTCProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid btc network config chain=%s err=%v", btcProf.Chain, err)
 	}
+	if !ok {
+		log.Fatalf("btc profile is not configured for chain=%s", btcProf.Chain)
+	}
+	cli, err := btcchain.NewClient(btcchain.Config{
+		Host:       btcProf.Host,
+		User:       btcProf.User,
+		Pass:       btcProf.Pass,
+		DisableTLS: btcProf.DisableTLS,
+		Params:     btcProf.Params,
+	})
+	if err != nil {
+		log.Fatalf("init btc rpc client failed chain=%s err=%v", btcProf.Chain, err)
+	}
+	return cli
 }
 
 func initGorm() *gorm.DB {
@@ -144,69 +148,69 @@ func initSignerClient() *clients.SignerClient {
 	return signerCli
 }
 
-func initWithdrawService(rdc *redisx.Client, evmrt evmRuntime, producer *kafka.Producer, db *gorm.DB, signerCli signpb.SignerServiceClient) *withdraw.Service {
-	profiles := buildWithdrawProfiles(evmrt.net)
-
+func initWithdrawService(
+	rdc *redisx.Client,
+	chainProfiles map[string]config.ChainProfile,
+	producer *kafka.Producer,
+	db *gorm.DB,
+	signerCli signpb.SignerServiceClient,
+) (*withdraw.Service, func()) {
+	chainRegistry, closeChainClients := buildWithdrawChainClientRegistry(chainProfiles)
 	return withdraw.NewService(
-		profiles,
+		chainProfiles,
 		[]byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET")),
 		withdraw.Deps{
 			Redis:       rdc.RDB,
-			ChainClient: buildWithdrawChainClientRegistry(evmrt.eth),
+			ChainClient: chainRegistry,
 			Signer:      signerCli,
 			Ledger:      repo.NewLedgerRepo(db),
 			Withdraw:    repo.NewWithdrawRepo(db),
 			Risk:        risk.NewNoopApprover(),
 		},
 		producer,
-	)
+	), closeChainClients
 }
 
-func buildWithdrawProfiles(evmNet config.EVMNetwork) map[string]withdraw.ChainProfile {
-	profile, err := config.LoadWithdrawProfileFromEnv()
+func buildChainProfiles() map[string]config.ChainProfile {
+	profiles, err := config.LoadChainProfilesFromEnv()
 	if err != nil {
 		log.Fatalf("invalid withdraw profile config: %v", err)
 	}
-	profiles := map[string]withdraw.ChainProfile{
-		evmNet.Chain: {
-			FromAddress:   profile.From.Hex(),
-			ChainID:       evmNet.ChainID,
-			FreezeReserve: profile.FreezeReserve,
-		},
-	}
-	appendBTCProfiles(profiles)
 	return profiles
 }
 
-func appendBTCProfiles(profiles map[string]withdraw.ChainProfile) {
-	btcFrom := helpers.Getenv("BTC_FROM_ADDRESS", "")
-	if btcFrom == "" {
-		return
-	}
-	chainRaw := helpers.Getenv("BTC_CHAIN", "btc")
-	spec, err := helpers.ResolveChainSpec(chainRaw)
-	if err != nil {
-		log.Fatalf("invalid BTC_CHAIN: %v", err)
-	}
-	if spec.Family != "btc" {
-		log.Fatalf("BTC_CHAIN must be a btc family chain")
-	}
-	feeReserveSats := big.NewInt(0)
-	if reserve := helpers.Getenv("BTC_WITHDRAW_FEE_RESERVE_SATS", "0"); reserve != "" {
-		if _, ok := feeReserveSats.SetString(reserve, 10); !ok || feeReserveSats.Sign() < 0 {
-			log.Fatalf("invalid BTC_WITHDRAW_FEE_RESERVE_SATS")
+func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (*chainclient.Registry, func()) {
+	registry := chainclient.NewRegistry()
+	var evmClient *ethclient.Client
+	var btcClient *btcchain.Client
+	for chain := range profiles {
+		spec, err := helpers.ResolveChainSpec(chain)
+		if err != nil {
+			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
+		}
+		if spec.Family == "evm" {
+			if evmClient == nil {
+				evmClient = initEthClient()
+			}
+			registry.RegisterEVM(chainclient.EVMRegistration{Client: evmClient})
+		}
+		if spec.Family == "btc" {
+			if btcClient == nil {
+				btcClient = initBTCClient()
+			}
+			registry.RegisterBTC(chainclient.BTCRegistration{
+				Client: btcClient,
+			})
 		}
 	}
-	profiles[spec.CanonicalChain] = withdraw.ChainProfile{
-		FromAddress:   btcFrom,
-		FreezeReserve: feeReserveSats,
+	return registry, func() {
+		if evmClient != nil {
+			evmClient.Close()
+		}
+		if btcClient != nil {
+			btcClient.Close()
+		}
 	}
-}
-
-func buildWithdrawChainClientRegistry(eth *ethclient.Client) *chainclient.Registry {
-	registry := chainclient.NewRegistry()
-	registry.RegisterEVM(eth)
-	return registry
 }
 
 func initHTTPServer(wsvc *withdraw.Service, asvc *address.AddressService) *http.Server {

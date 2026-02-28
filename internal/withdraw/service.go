@@ -11,6 +11,7 @@ import (
 
 	auth "wallet-system/internal/auth"
 	"wallet-system/internal/broadcaster"
+	"wallet-system/internal/config"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
@@ -32,11 +33,7 @@ type Deps struct {
 	Risk        RiskApprover
 }
 
-type ChainProfile struct {
-	FromAddress   string
-	ChainID       *big.Int
-	FreezeReserve *big.Int // optional extra reserve in smallest unit; nil/0 means none
-}
+type ChainProfile = config.ChainProfile
 
 type RiskApproveInput struct {
 	WithdrawID string
@@ -279,6 +276,9 @@ func (s *Service) chainRuntime(chain string, profile ChainProfile) chainclient.R
 		Chain:       chain,
 		ChainID:     profile.ChainID,
 		FromAddress: profile.FromAddress,
+		MinConf:     profile.MinConf,
+		FeeTarget:   profile.FeeTarget,
+		FeeRate:     profile.FeeRate,
 	}
 }
 

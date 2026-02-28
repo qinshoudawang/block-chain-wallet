@@ -2,7 +2,6 @@ package helpers
 
 import (
 	"log"
-	"math/big"
 	"os"
 	"strconv"
 	"strings"
@@ -32,18 +31,26 @@ func MustEnv(k string) string {
 	return v
 }
 
-func MustAtoi(s string) int {
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		panic(err)
+func ParseIntEnv(key string, defaultValue int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue
 	}
-	return n
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		panic("invalid " + key + ": " + err.Error())
+	}
+	return v
 }
 
-func MustBig(s string) *big.Int {
-	bi := new(big.Int)
-	if _, ok := bi.SetString(s, 10); !ok {
-		panic("invalid big int")
+func ParseInt64Env(key string, defaultValue int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue
 	}
-	return bi
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		panic("invalid " + key + ": " + err.Error())
+	}
+	return v
 }

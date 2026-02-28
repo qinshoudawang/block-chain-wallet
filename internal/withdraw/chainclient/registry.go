@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"wallet-system/internal/chain/btc"
 
 	"wallet-system/internal/helpers"
 
@@ -14,9 +15,16 @@ type Registry struct {
 	byFamily map[string]Client
 }
 
+type EVMRegistration struct {
+	Client *ethclient.Client
+}
+
+type BTCRegistration struct {
+	Client *btc.Client
+}
+
 func NewRegistry() *Registry {
 	r := &Registry{byFamily: make(map[string]Client)}
-	r.Register("btc", newBTCClient())
 	r.Register("sol", newSolanaClient())
 	return r
 }
@@ -31,8 +39,12 @@ func (r *Registry) Register(family string, cli Client) {
 	r.byFamily[strings.ToLower(strings.TrimSpace(family))] = cli
 }
 
-func (r *Registry) RegisterEVM(eth *ethclient.Client) {
-	r.Register("evm", newEVMClient(eth))
+func (r *Registry) RegisterEVM(reg EVMRegistration) {
+	r.Register("evm", newEVMClient(reg.Client))
+}
+
+func (r *Registry) RegisterBTC(reg BTCRegistration) {
+	r.Register("btc", newBTCClientWithRPC(reg.Client))
 }
 
 func (r *Registry) ResolveByChain(chain string) (Client, error) {

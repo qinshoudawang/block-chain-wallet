@@ -86,12 +86,11 @@ func (s *Service) SignTransaction(ctx context.Context, req *signpb.SignRequest) 
 		return nil, ErrAuthFailed
 	}
 
+	// 4) 签名（Provider：Local / MockKMS / 后续可换 HSM/MPC）
 	p, err := s.providers.Resolve(req.Chain)
 	if err != nil {
 		return nil, err
 	}
-
-	// 4) 签名（Provider：Local / MockKMS / 后续可换 HSM/MPC）
 	signed, err := p.Sign(req.UnsignedTx)
 	if err != nil {
 		return nil, err

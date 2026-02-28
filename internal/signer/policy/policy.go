@@ -12,11 +12,16 @@ type PolicyEngine struct {
 }
 
 func NewPolicyEngine() *PolicyEngine {
+	whitelist := map[string]bool{}
+	if addr := helpers.Getenv("ETH_TO_ADDRESS", ""); addr != "" {
+		whitelist[addr] = true
+	}
+	if addr := helpers.Getenv("BTC_TO_ADDRESS", ""); addr != "" {
+		whitelist[addr] = true
+	}
 	return &PolicyEngine{
 		MaxAmount: big.NewInt(1000000000000000000), // 1 ETH
-		WhiteList: map[string]bool{
-			helpers.Getenv("ETH_TO_ADDRESS", ""): true,
-		},
+		WhiteList: whitelist,
 	}
 }
 

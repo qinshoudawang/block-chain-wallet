@@ -14,6 +14,9 @@ type Runtime struct {
 	Chain       string
 	ChainID     *big.Int
 	FromAddress string
+	MinConf     int
+	FeeTarget   int64
+	FeeRate     int64
 }
 
 type NonceFloorProvider func(context.Context) (uint64, error)
