@@ -16,8 +16,6 @@ type BTCProfile struct {
 	FeeTarget     int64
 	FeeRate       int64
 	Host          string
-	User          string
-	Pass          string
 	DisableTLS    bool
 	Params        string
 }
@@ -65,8 +63,6 @@ func LoadBTCProfileFromEnv() (BTCProfile, bool, error) {
 		FeeTarget:     feeTarget,
 		FeeRate:       feeRate,
 		Host:          helpers.MustEnv("BTC_RPC_HOST"),
-		User:          helpers.MustEnv("BTC_RPC_USER"),
-		Pass:          helpers.MustEnv("BTC_RPC_PASS"),
 		DisableTLS:    strings.EqualFold(helpers.Getenv("BTC_RPC_DISABLE_TLS", "true"), "true"),
 		Params:        params,
 	}, true, nil

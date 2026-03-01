@@ -60,18 +60,15 @@ func (c *evmClient) GetConfirmation(ctx context.Context, txHash string, amount s
 		BlockNumber:   bn,
 		Confirmations: conf,
 		Settlement: &Settlement{
-			GasUsed:        receipt.GasUsed,
-			GasPriceWei:    settlement.GasPriceWei,
-			GasFeeWei:      settlement.GasFeeWei,
-			ActualSpentWei: settlement.ActualSpentWei,
+			NetworkFeeAmount:  settlement.NetworkFeeAmount,
+			ActualSpentAmount: settlement.ActualSpentAmount,
 		},
 	}, nil
 }
 
 type evmSettlement struct {
-	GasPriceWei    *big.Int
-	GasFeeWei      *big.Int
-	ActualSpentWei *big.Int
+	NetworkFeeAmount  *big.Int
+	ActualSpentAmount *big.Int
 }
 
 func calcSettlementWei(amountWei string, receipt *ethtypes.Receipt) (*evmSettlement, error) {
@@ -86,9 +83,8 @@ func calcSettlementWei(amountWei string, receipt *ethtypes.Receipt) (*evmSettlem
 	gasFeeWei := new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), gasPriceWei)
 	actualSpentWei := new(big.Int).Add(amount, gasFeeWei)
 	return &evmSettlement{
-		GasPriceWei:    gasPriceWei,
-		GasFeeWei:      gasFeeWei,
-		ActualSpentWei: actualSpentWei,
+		NetworkFeeAmount:  gasFeeWei,
+		ActualSpentAmount: actualSpentWei,
 	}, nil
 }
 
@@ -96,4 +92,4 @@ var errInvalidAmountWei = invalidAmountWeiError{}
 
 type invalidAmountWeiError struct{}
 
-func (invalidAmountWeiError) Error() string { return "invalid amount wei" }
+func (invalidAmountWeiError) Error() string { return "invalid amount" }

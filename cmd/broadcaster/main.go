@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"wallet-system/internal/broadcaster"
 	broadcasterchain "wallet-system/internal/broadcaster/chainclient"
@@ -17,6 +18,8 @@ import (
 	"wallet-system/internal/config/env"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
+	"wallet-system/internal/infra/redisx"
+	"wallet-system/internal/sequence/utxoreserve"
 	storagemigrate "wallet-system/internal/storage/migrate"
 	"wallet-system/internal/storage/repo"
 
@@ -36,6 +39,11 @@ func main() {
 	go handleShutdown(cancel)
 
 	db := initGorm()
+	rdc := initRedis(ctx)
+	defer rdc.RDB.Close()
+	utxoReserveTTL := time.Duration(helpers.ParseIntEnv("BTC_UTXO_RESERVE_TTL_SEC", 7200)) * time.Second
+	utxoReserveRepo := repo.NewUTXOReservationRepo(db)
+	utxoReserve := utxoreserve.NewManager(rdc.RDB, utxoReserveRepo, utxoReserveTTL)
 	withdrawRepo := repo.NewWithdrawRepo(db)
 	ledgerRepo := repo.NewLedgerRepo(db)
 	producer := initKafkaProducer()
@@ -46,9 +54,9 @@ func main() {
 	clients, closeChainClients := buildBroadcasterChainClientRegistry(chainProfiles)
 	defer closeChainClients()
 
-	go broadcaster.RunConsumer(ctx, withdrawRepo, clients, consumer)
+	go broadcaster.RunConsumer(ctx, withdrawRepo, clients, utxoReserve, consumer)
 	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
-	go broadcaster.RunConfirmer(ctx, withdrawRepo, ledgerRepo, clients)
+	go broadcaster.RunConfirmer(ctx, withdrawRepo, ledgerRepo, clients, utxoReserve)
 
 	<-ctx.Done()
 }
@@ -59,6 +67,20 @@ func handleShutdown(cancel context.CancelFunc) {
 	defer signal.Stop(ch)
 	<-ch
 	cancel()
+}
+
+func initRedis(ctx context.Context) *redisx.Client {
+	rdc := redisx.New(
+		helpers.MustEnv("REDIS_ADDR"),
+		helpers.MustEnv("REDIS_PASS"),
+		helpers.MustEnv("REDIS_DB"),
+	)
+	pingCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if err := rdc.Ping(pingCtx); err != nil {
+		log.Fatalf("redis ping failed: %v", err)
+	}
+	return rdc
 }
 
 func initGorm() *gorm.DB {
@@ -104,8 +126,6 @@ func initBTCClient() *btcchain.Client {
 	}
 	cli, err := btcchain.NewClient(btcchain.Config{
 		Host:       prof.Host,
-		User:       prof.User,
-		Pass:       prof.Pass,
 		DisableTLS: prof.DisableTLS,
 		Params:     prof.Params,
 	})
@@ -133,7 +153,7 @@ func buildBroadcasterChainClientRegistry(profiles map[string]config.ChainProfile
 		if err != nil {
 			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
 		}
-		if spec.Family == "evm" {
+		if spec.Family == helpers.FamilyEVM {
 			if evmClient == nil {
 				evmClient = initEVMClient()
 			}
@@ -141,7 +161,7 @@ func buildBroadcasterChainClientRegistry(profiles map[string]config.ChainProfile
 				log.Fatalf("register broadcaster chain client failed: %v", err)
 			}
 		}
-		if spec.Family == "btc" {
+		if spec.Family == helpers.FamilyBTC {
 			if btcClient == nil {
 				btcClient = initBTCClient()
 			}

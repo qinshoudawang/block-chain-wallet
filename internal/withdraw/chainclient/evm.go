@@ -6,7 +6,7 @@ import (
 	"math/big"
 
 	"wallet-system/internal/chain/evm"
-	"wallet-system/internal/withdraw/nonce"
+	"wallet-system/internal/sequence/nonce"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/redis/go-redis/v9"
@@ -32,15 +32,18 @@ func (c *evmClient) ValidateWithdrawInput(chain string, to string, amount string
 	return addr.Hex(), amt, nil
 }
 
-func (c *evmClient) AllocateEVMNonce(ctx context.Context, redisClient *redis.Client, rt Runtime, nonceFloorProvider NonceFloorProvider) (uint64, error) {
+func (c *evmClient) AllocateSequence(ctx context.Context, redisClient *redis.Client, rt *Runtime, sequenceFloorProvider SequenceFloorProvider) (uint64, error) {
 	if c == nil || c.evm == nil {
 		return 0, errors.New("evm client is required")
 	}
 	if redisClient == nil {
 		return 0, errors.New("redis is required")
 	}
-	if nonceFloorProvider == nil {
-		return 0, errors.New("nonce floor provider is required")
+	if sequenceFloorProvider == nil {
+		return 0, errors.New("sequence floor provider is required")
+	}
+	if rt == nil {
+		return 0, errors.New("runtime is required")
 	}
 	if !common.IsHexAddress(rt.FromAddress) {
 		return 0, errors.New("invalid evm from address")
@@ -50,7 +53,7 @@ func (c *evmClient) AllocateEVMNonce(ctx context.Context, redisClient *redis.Cli
 	nm := nonce.NewManager(redisClient, rt.Chain, from.Hex(), func(ctx context.Context) (uint64, error) {
 		return c.evm.PendingNonceAt(ctx, from)
 	})
-	nm.WithNonceFloorProvider(nonceFloorProvider)
+	nm.WithNonceFloorProvider(sequenceFloorProvider)
 	if err := nm.EnsureInitialized(ctx); err != nil {
 		return 0, err
 	}

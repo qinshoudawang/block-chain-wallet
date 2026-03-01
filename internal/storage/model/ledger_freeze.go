@@ -19,7 +19,7 @@ type LedgerFreeze struct {
 	BizID   string `gorm:"type:varchar(64);not null;uniqueIndex:uk_biz,priority:2"`
 
 	Chain   string `gorm:"type:varchar(32);not null;index:idx_chain_addr_status,priority:1"`
-	Address string `gorm:"type:varchar(64);not null;index:idx_chain_addr_status,priority:2"`
+	Address string `gorm:"type:varchar(128);not null;index:idx_chain_addr_status,priority:2"`
 	Amount  string `gorm:"type:varchar(80);not null"`
 
 	Status LedgerFreezeStatus `gorm:"type:varchar(24);not null;index:idx_chain_addr_status,priority:3"`

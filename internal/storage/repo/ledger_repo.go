@@ -68,11 +68,11 @@ func (r *LedgerRepo) FreezeWithdraw(ctx context.Context, chain, address, withdra
 			return err
 		}
 
-		avail, err := parseWei(acct.AvailableWei)
+		avail, err := parseAmount(acct.AvailableAmount)
 		if err != nil {
 			return fmt.Errorf("parse ledger available: %w", err)
 		}
-		frozen, err := parseWei(acct.FrozenWei)
+		frozen, err := parseAmount(acct.FrozenAmount)
 		if err != nil {
 			return fmt.Errorf("parse ledger frozen: %w", err)
 		}
@@ -85,8 +85,8 @@ func (r *LedgerRepo) FreezeWithdraw(ctx context.Context, chain, address, withdra
 		if err := tx.Model(&model.LedgerAccount{}).
 			Where("id = ?", acct.ID).
 			Updates(map[string]any{
-				"available_wei": avail.String(),
-				"frozen_wei":    frozen.String(),
+				"available_amount": avail.String(),
+				"frozen_amount":    frozen.String(),
 			}).Error; err != nil {
 			return err
 		}
@@ -139,15 +139,15 @@ func (r *LedgerRepo) ReleaseWithdrawFreeze(ctx context.Context, withdrawID strin
 			return err
 		}
 
-		amt, err := parseWei(fz.Amount)
+		amt, err := parseAmount(fz.Amount)
 		if err != nil {
 			return fmt.Errorf("parse freeze amount: %w", err)
 		}
-		avail, err := parseWei(acct.AvailableWei)
+		avail, err := parseAmount(acct.AvailableAmount)
 		if err != nil {
 			return fmt.Errorf("parse ledger available: %w", err)
 		}
-		frozen, err := parseWei(acct.FrozenWei)
+		frozen, err := parseAmount(acct.FrozenAmount)
 		if err != nil {
 			return fmt.Errorf("parse ledger frozen: %w", err)
 		}
@@ -160,8 +160,8 @@ func (r *LedgerRepo) ReleaseWithdrawFreeze(ctx context.Context, withdrawID strin
 		if err := tx.Model(&model.LedgerAccount{}).
 			Where("id = ?", acct.ID).
 			Updates(map[string]any{
-				"available_wei": avail.String(),
-				"frozen_wei":    frozen.String(),
+				"available_amount": avail.String(),
+				"frozen_amount":    frozen.String(),
 			}).Error; err != nil {
 			return err
 		}
@@ -207,11 +207,11 @@ func (r *LedgerRepo) ConsumeWithdrawFreeze(ctx context.Context, withdrawID strin
 			return err
 		}
 
-		amt, err := parseWei(fz.Amount)
+		amt, err := parseAmount(fz.Amount)
 		if err != nil {
 			return fmt.Errorf("parse freeze amount: %w", err)
 		}
-		frozen, err := parseWei(acct.FrozenWei)
+		frozen, err := parseAmount(acct.FrozenAmount)
 		if err != nil {
 			return fmt.Errorf("parse ledger frozen: %w", err)
 		}
@@ -223,7 +223,7 @@ func (r *LedgerRepo) ConsumeWithdrawFreeze(ctx context.Context, withdrawID strin
 		if err := tx.Model(&model.LedgerAccount{}).
 			Where("id = ?", acct.ID).
 			Updates(map[string]any{
-				"frozen_wei": frozen.String(),
+				"frozen_amount": frozen.String(),
 			}).Error; err != nil {
 			return err
 		}
@@ -282,15 +282,15 @@ func (r *LedgerRepo) settleWithdrawFreezeWithDB(db *gorm.DB, withdrawID string, 
 		return err
 	}
 
-	reserved, err := parseWei(fz.Amount)
+	reserved, err := parseAmount(fz.Amount)
 	if err != nil {
 		return fmt.Errorf("parse freeze amount: %w", err)
 	}
-	avail, err := parseWei(acct.AvailableWei)
+	avail, err := parseAmount(acct.AvailableAmount)
 	if err != nil {
 		return fmt.Errorf("parse ledger available: %w", err)
 	}
-	frozen, err := parseWei(acct.FrozenWei)
+	frozen, err := parseAmount(acct.FrozenAmount)
 	if err != nil {
 		return fmt.Errorf("parse ledger frozen: %w", err)
 	}
@@ -316,8 +316,8 @@ func (r *LedgerRepo) settleWithdrawFreezeWithDB(db *gorm.DB, withdrawID string, 
 	if err := tx.Model(&model.LedgerAccount{}).
 		Where("id = ?", acct.ID).
 		Updates(map[string]any{
-			"available_wei": avail.String(),
-			"frozen_wei":    frozen.String(),
+			"available_amount": avail.String(),
+			"frozen_amount":    frozen.String(),
 		}).Error; err != nil {
 		return err
 	}
@@ -332,10 +332,10 @@ func (r *LedgerRepo) settleWithdrawFreezeWithDB(db *gorm.DB, withdrawID string, 
 		}).Error
 }
 
-func parseWei(v string) (*big.Int, error) {
+func parseAmount(v string) (*big.Int, error) {
 	n := new(big.Int)
 	if _, ok := n.SetString(v, 10); !ok || n.Sign() < 0 {
-		return nil, fmt.Errorf("invalid wei amount: %q", v)
+		return nil, fmt.Errorf("invalid amount: %q", v)
 	}
 	return n, nil
 }

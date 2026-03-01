@@ -3,6 +3,7 @@ package model
 import "time"
 
 type WithdrawStatus string
+type ReservationType string
 
 const (
 	StatusINIT         WithdrawStatus = "INIT"
@@ -12,6 +13,9 @@ const (
 	StatusBROADCASTED  WithdrawStatus = "BROADCASTED"
 	StatusCONFIRMED    WithdrawStatus = "CONFIRMED"
 	StatusFAILED       WithdrawStatus = "FAILED"
+
+	ReservationTypeNone ReservationType = ""
+	ReservationTypeUTXO ReservationType = "UTXO"
 )
 
 type WithdrawOrder struct {
@@ -19,22 +23,21 @@ type WithdrawOrder struct {
 	WithdrawID string `gorm:"type:varchar(64);not null;uniqueIndex:uk_withdraw_id"`
 	RequestID  string `gorm:"type:varchar(64);not null;uniqueIndex:uk_request_id"`
 
-	Chain    string  `gorm:"type:varchar(32);not null;index:idx_chain_status,priority:1"`
-	FromAddr string  `gorm:"type:varchar(64);not null;uniqueIndex:uk_chain_from_nonce,priority:2"`
-	ToAddr   string  `gorm:"type:varchar(64);not null"`
-	Amount   string  `gorm:"type:varchar(80);not null"`
-	Nonce    *uint64 `gorm:"uniqueIndex:uk_chain_from_nonce,priority:3"`
+	Chain    string `gorm:"type:varchar(32);not null;index:idx_chain_status,priority:1"`
+	FromAddr string `gorm:"type:varchar(128);not null;uniqueIndex:uk_chain_from_sequence,priority:2"`
+	ToAddr   string `gorm:"type:varchar(128);not null"`
+	Amount   string `gorm:"type:varchar(80);not null"`
+	Sequence uint64 `gorm:"not null;uniqueIndex:uk_chain_from_sequence,priority:3"`
 
 	SignedPayload         string `gorm:"type:text"`
 	SignedPayloadEncoding string `gorm:"type:varchar(16);not null;default:'hex'"`
 	ChainMetaJSON         string `gorm:"type:text"`
 
-	TxHash string `gorm:"type:varchar(80);index"`
+	TxHash string `gorm:"type:varchar(128);index"`
 
-	GasUsed              *uint64
-	EffectiveGasPriceWei string `gorm:"type:varchar(80)"`
-	GasFeeWei            string `gorm:"type:varchar(80)"`
-	ActualSpentWei       string `gorm:"type:varchar(80)"`
+	NetworkFeeAmount  string          `gorm:"type:varchar(80)"`
+	ActualSpentAmount string          `gorm:"type:varchar(80)"`
+	ReservationType   ReservationType `gorm:"type:varchar(16);not null;default:''"`
 
 	Status      WithdrawStatus `gorm:"type:varchar(24);not null;index:idx_status_next_retry,priority:1;index:idx_status_updated,priority:1"`
 	RetryCount  int            `gorm:"not null;default:0"`

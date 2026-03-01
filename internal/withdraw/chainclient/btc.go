@@ -7,12 +7,15 @@ import (
 	"math"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 	"wallet-system/internal/chain/btc"
 	"wallet-system/internal/helpers"
+	"wallet-system/internal/sequence/nonce"
 
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/redis/go-redis/v9"
 )
 
 type btcClient struct {
@@ -41,6 +44,48 @@ func (c *btcClient) ValidateWithdrawInput(chain string, to string, amount string
 		return "", nil, errors.New("btc amount too large")
 	}
 	return addr.EncodeAddress(), amt, nil
+}
+
+func (c *btcClient) AllocateSequence(
+	ctx context.Context,
+	redisClient *redis.Client,
+	rt *Runtime,
+	sequenceFloorProvider SequenceFloorProvider,
+) (uint64, error) {
+	if redisClient == nil {
+		return 0, errors.New("redis is required")
+	}
+	if rt == nil {
+		return 0, errors.New("runtime is required")
+	}
+	if sequenceFloorProvider == nil {
+		return 0, errors.New("sequence floor provider is required")
+	}
+	account := strings.ToLower(strings.TrimSpace(rt.FromAddress))
+	if account == "" {
+		return 0, errors.New("invalid btc from address")
+	}
+	nm := nonce.NewManager(redisClient, rt.Chain, account, sequenceFloorProvider)
+	if err := nm.EnsureInitialized(ctx); err != nil {
+		return 0, err
+	}
+	sequence, err := nm.Allocate(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if rt.UTXOReserve != nil {
+		excluded, err := rt.UTXOReserve.ListReservedForAccount(ctx, rt.Chain, rt.FromAddress)
+		if err != nil {
+			return 0, err
+		}
+		rt.ExcludedUTXOKeys = excluded
+		if strings.TrimSpace(rt.WithdrawID) != "" {
+			rt.ReserveUTXO = func(ctx context.Context, utxoKeys []string) error {
+				return rt.UTXOReserve.ReserveByWithdrawID(ctx, rt.Chain, rt.FromAddress, rt.WithdrawID, utxoKeys)
+			}
+		}
+	}
+	return sequence, nil
 }
 
 func (c *btcClient) BuildUnsignedWithdrawTx(
@@ -75,6 +120,9 @@ func (c *btcClient) BuildUnsignedWithdrawTx(
 		if u.ValueSat <= 0 {
 			continue
 		}
+		if _, reserved := rt.ExcludedUTXOKeys[formatBTCUTXOKey(u.TxID, u.Vout)]; reserved {
+			continue
+		}
 		spendable = append(spendable, u)
 	}
 	if len(spendable) == 0 {
@@ -89,6 +137,15 @@ func (c *btcClient) BuildUnsignedWithdrawTx(
 	}
 	if amount == nil || amount.Sign() <= 0 || amount.Cmp(big.NewInt(math.MaxInt64)) > 0 {
 		return nil, errors.New("invalid amount")
+	}
+	if rt.ReserveUTXO != nil {
+		utxoKeys := make([]string, 0, len(selected))
+		for _, u := range selected {
+			utxoKeys = append(utxoKeys, formatBTCUTXOKey(u.TxID, u.Vout))
+		}
+		if err := rt.ReserveUTXO(ctx, utxoKeys); err != nil {
+			return nil, err
+		}
 	}
 
 	// 4) 构建 unsigned raw tx，并附带 signer 需要的 prevout 元数据。
@@ -114,7 +171,7 @@ func decodeBTCAddressByChain(chain string, addr string) (btcutil.Address, error)
 	if err != nil {
 		return nil, err
 	}
-	if spec.Family != "btc" {
+	if spec.Family != helpers.FamilyBTC {
 		return nil, errors.New("invalid btc chain")
 	}
 
@@ -196,4 +253,8 @@ func estimateP2WPKHFee(inputs int, outputs int, feeRateSatPerVByte int64) int64 
 	// 10 bytes base + 68 vbytes per input + 31 vbytes per output.
 	vbytes := 10 + (68 * inputs) + (31 * outputs)
 	return int64(math.Ceil(float64(vbytes) * float64(feeRateSatPerVByte)))
+}
+
+func formatBTCUTXOKey(txid string, vout uint32) string {
+	return strings.ToLower(strings.TrimSpace(txid)) + ":" + strconv.FormatUint(uint64(vout), 10)
 }

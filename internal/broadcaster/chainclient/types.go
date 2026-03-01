@@ -9,10 +9,8 @@ import (
 var ErrNotImplemented = errors.New("broadcaster chain client not implemented")
 
 type Settlement struct {
-	GasUsed        uint64
-	GasPriceWei    *big.Int
-	GasFeeWei      *big.Int
-	ActualSpentWei *big.Int
+	NetworkFeeAmount  *big.Int
+	ActualSpentAmount *big.Int
 }
 
 type Confirmation struct {

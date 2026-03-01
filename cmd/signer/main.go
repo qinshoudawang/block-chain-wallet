@@ -117,7 +117,7 @@ func registerEVMSignerProviders(registry *provider.Registry, profiles map[string
 		if err != nil {
 			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
 		}
-		if spec.Family != "evm" {
+		if spec.Family != helpers.FamilyEVM {
 			continue
 		}
 		if p.ChainID == nil {
@@ -144,7 +144,7 @@ func registerBTCSignerProvider(registry *provider.Registry, profiles map[string]
 		if err != nil {
 			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
 		}
-		if spec.Family != "btc" {
+		if spec.Family != helpers.FamilyBTC {
 			continue
 		}
 		btcSigner, err := provider.NewBTCSigner(priv)

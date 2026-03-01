@@ -8,6 +8,12 @@ import (
 
 var ErrUnsupportedChain = errors.New("unsupported chain")
 
+const (
+	FamilyEVM = "evm"
+	FamilyBTC = "btc"
+	FamilySOL = "sol"
+)
+
 type ChainSpec struct {
 	CanonicalChain string
 	Family         string
@@ -45,7 +51,7 @@ func ResolveChainSpec(chain string) (ChainSpec, error) {
 	case "btc", "bitcoin":
 		return ChainSpec{
 			CanonicalChain: "btc",
-			Family:         "btc",
+			Family:         FamilyBTC,
 			IsTestnet:      false,
 			Purpose:        84,
 			CoinType:       0,
@@ -55,7 +61,7 @@ func ResolveChainSpec(chain string) (ChainSpec, error) {
 	case "btc-testnet", "bitcoin-testnet", "btctest", "btc_testnet":
 		return ChainSpec{
 			CanonicalChain: "btc-testnet",
-			Family:         "btc",
+			Family:         FamilyBTC,
 			IsTestnet:      true,
 			Purpose:        84,
 			CoinType:       1,
@@ -65,7 +71,7 @@ func ResolveChainSpec(chain string) (ChainSpec, error) {
 	case "sol", "solana":
 		return ChainSpec{
 			CanonicalChain: "sol",
-			Family:         "sol",
+			Family:         FamilySOL,
 			Purpose:        44,
 			CoinType:       501,
 			Account:        0,
@@ -79,7 +85,7 @@ func ResolveChainSpec(chain string) (ChainSpec, error) {
 func evmSpec(canonical string) ChainSpec {
 	return ChainSpec{
 		CanonicalChain: canonical,
-		Family:         "evm",
+		Family:         FamilyEVM,
 		Purpose:        44,
 		CoinType:       60,
 		Account:        0,

@@ -9,12 +9,12 @@ const (
 type WithdrawRequest struct {
 	Chain  string `json:"chain" binding:"required"`
 	To     string `json:"to" binding:"required"`
-	Amount string `json:"amount" binding:"required"` // wei decimal
+	Amount string `json:"amount" binding:"required"` // atomic-unit decimal
 }
 
 type WithdrawResponse struct {
 	WithdrawID string         `json:"withdraw_id"`
 	RequestID  string         `json:"request_id"`
-	Nonce      *uint64        `json:"nonce,omitempty"`
+	Sequence   uint64         `json:"sequence"`
 	Status     WithdrawStatus `json:"status"`
 }

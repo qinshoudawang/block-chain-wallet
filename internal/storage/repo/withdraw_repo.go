@@ -26,28 +26,28 @@ func (r *WithdrawRepo) InsertSigned(ctx context.Context, o *model.WithdrawOrder)
 	return r.db.WithContext(ctx).Create(o).Error
 }
 
-// NextNonceFloor returns max(nonce)+1 for a (chain, from) pair from persisted withdraw orders.
-// It is used to prevent Redis nonce allocator from reusing a nonce after cache loss.
-func (r *WithdrawRepo) NextNonceFloor(ctx context.Context, chain, fromAddr string) (uint64, error) {
+// NextSequenceFloor returns max(sequence)+1 for a (chain, from) pair from persisted withdraw orders.
+// It is used to prevent sequence allocators from reusing a sequence after cache loss.
+func (r *WithdrawRepo) NextSequenceFloor(ctx context.Context, chain, fromAddr string) (uint64, error) {
 	if r == nil || r.db == nil {
 		return 0, errors.New("withdraw repo not configured")
 	}
-	var maxNonce sql.NullInt64
+	var maxSequence sql.NullInt64
 	row := r.db.WithContext(ctx).
 		Model(&model.WithdrawOrder{}).
 		Where("chain = ? AND from_addr = ?", chain, fromAddr).
-		Select("MAX(nonce)").
+		Select("MAX(sequence)").
 		Row()
-	if err := row.Scan(&maxNonce); err != nil {
+	if err := row.Scan(&maxSequence); err != nil {
 		return 0, err
 	}
-	if !maxNonce.Valid {
+	if !maxSequence.Valid {
 		return 0, nil
 	}
-	if maxNonce.Int64 < 0 {
-		return 0, errors.New("invalid max nonce in db")
+	if maxSequence.Int64 < 0 {
+		return 0, errors.New("invalid max sequence in db")
 	}
-	return uint64(maxNonce.Int64) + 1, nil
+	return uint64(maxSequence.Int64) + 1, nil
 }
 
 // MarkBroadcasted: broadcaster 广播成功后调用（幂等）
@@ -147,22 +147,17 @@ func (r *WithdrawRepo) updateConfirmationsWithDB(db *gorm.DB, withdrawID string,
 	return res.RowsAffected > 0, res.Error
 }
 
-func (r *WithdrawRepo) SaveSettlement(ctx context.Context, withdrawID string, gasUsed uint64, effectiveGasPriceWei, gasFeeWei, actualSpentWei *big.Int) (bool, error) {
-	return r.saveSettlementWithDB(r.db.WithContext(ctx), withdrawID, gasUsed, effectiveGasPriceWei, gasFeeWei, actualSpentWei)
+func (r *WithdrawRepo) SaveSettlement(ctx context.Context, withdrawID string, networkFeeAmount, actualSpentAmount *big.Int) (bool, error) {
+	return r.saveSettlementWithDB(r.db.WithContext(ctx), withdrawID, networkFeeAmount, actualSpentAmount)
 }
 
-func (r *WithdrawRepo) saveSettlementWithDB(db *gorm.DB, withdrawID string, gasUsed uint64, effectiveGasPriceWei, gasFeeWei, actualSpentWei *big.Int) (bool, error) {
-	updates := map[string]any{
-		"gas_used": gasUsed,
+func (r *WithdrawRepo) saveSettlementWithDB(db *gorm.DB, withdrawID string, networkFeeAmount, actualSpentAmount *big.Int) (bool, error) {
+	updates := map[string]any{}
+	if networkFeeAmount != nil {
+		updates["network_fee_amount"] = networkFeeAmount.String()
 	}
-	if effectiveGasPriceWei != nil {
-		updates["effective_gas_price_wei"] = effectiveGasPriceWei.String()
-	}
-	if gasFeeWei != nil {
-		updates["gas_fee_wei"] = gasFeeWei.String()
-	}
-	if actualSpentWei != nil {
-		updates["actual_spent_wei"] = actualSpentWei.String()
+	if actualSpentAmount != nil {
+		updates["actual_spent_amount"] = actualSpentAmount.String()
 	}
 	res := db.Model(&model.WithdrawOrder{}).
 		Where("withdraw_id = ?", withdrawID).
@@ -177,10 +172,8 @@ func (r *WithdrawRepo) ConfirmWithSettlement(
 	blockNum uint64,
 	conf int,
 	threshold int,
-	gasUsed uint64,
-	effectiveGasPriceWei *big.Int,
-	gasFeeWei *big.Int,
-	actualSpentWei *big.Int,
+	networkFeeAmount *big.Int,
+	actualSpentAmount *big.Int,
 ) (bool, error) {
 	if r == nil || r.db == nil {
 		return false, errors.New("withdraw repo not configured")
@@ -188,11 +181,11 @@ func (r *WithdrawRepo) ConfirmWithSettlement(
 	var updated bool
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if lr != nil {
-			if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, actualSpentWei); err != nil {
+			if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, actualSpentAmount); err != nil {
 				return err
 			}
 		}
-		ok, err := r.saveSettlementWithDB(tx, withdrawID, gasUsed, effectiveGasPriceWei, gasFeeWei, actualSpentWei)
+		ok, err := r.saveSettlementWithDB(tx, withdrawID, networkFeeAmount, actualSpentAmount)
 		if err != nil {
 			return err
 		}

@@ -50,7 +50,7 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	log.Printf("[withdraw-handler] create/sign success withdraw_id=%s request_id=%s nonce=%s", resp.WithdrawID, resp.RequestID, nonceForLog(resp.Nonce))
+	log.Printf("[withdraw-handler] create/sign success withdraw_id=%s request_id=%s sequence=%s", resp.WithdrawID, resp.RequestID, sequenceForLog(resp.Sequence))
 
 	// 异步广播
 	key := canonicalChain + ":" + resp.From
@@ -71,14 +71,11 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 	c.JSON(http.StatusOK, dto.WithdrawResponse{
 		WithdrawID: resp.WithdrawID,
 		RequestID:  resp.RequestID,
-		Nonce:      resp.Nonce,
+		Sequence:   resp.Sequence,
 		Status:     dto.WithdrawStatusSignedEnqueued,
 	})
 }
 
-func nonceForLog(v *uint64) string {
-	if v == nil {
-		return "-"
-	}
-	return fmt.Sprintf("%d", *v)
+func sequenceForLog(v uint64) string {
+	return fmt.Sprintf("%d", v)
 }

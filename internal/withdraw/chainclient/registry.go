@@ -24,7 +24,7 @@ type BTCRegistration struct {
 
 func NewRegistry() *Registry {
 	r := &Registry{byFamily: make(map[string]Client)}
-	r.Register("sol", newSolanaClient())
+	r.Register(helpers.FamilySOL, newSolanaClient())
 	return r
 }
 
@@ -39,11 +39,11 @@ func (r *Registry) Register(family string, cli Client) {
 }
 
 func (r *Registry) RegisterEVM(reg EVMRegistration) {
-	r.Register("evm", newEVMClient(reg.Client))
+	r.Register(helpers.FamilyEVM, newEVMClient(reg.Client))
 }
 
 func (r *Registry) RegisterBTC(reg BTCRegistration) {
-	r.Register("btc", newBTCClientWithRPC(reg.Client))
+	r.Register(helpers.FamilyBTC, newBTCClientWithRPC(reg.Client))
 }
 
 func (r *Registry) ResolveByChain(chain string) (Client, error) {

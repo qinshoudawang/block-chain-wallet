@@ -21,11 +21,12 @@ import (
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
-	"wallet-system/internal/risk"
+	"wallet-system/internal/sequence/utxoreserve"
 	storagemigrate "wallet-system/internal/storage/migrate"
 	"wallet-system/internal/storage/repo"
 	"wallet-system/internal/withdraw"
 	"wallet-system/internal/withdraw/chainclient"
+	"wallet-system/internal/withdraw/risk"
 	signpb "wallet-system/proto/signer"
 
 	"gorm.io/driver/postgres"
@@ -110,8 +111,6 @@ func initBTCClient() *btcchain.Client {
 	}
 	cli, err := btcchain.NewClient(btcchain.Config{
 		Host:       btcProf.Host,
-		User:       btcProf.User,
-		Pass:       btcProf.Pass,
 		DisableTLS: btcProf.DisableTLS,
 		Params:     btcProf.Params,
 	})
@@ -156,6 +155,7 @@ func initWithdrawService(
 	signerCli signpb.SignerServiceClient,
 ) (*withdraw.Service, func()) {
 	chainRegistry, closeChainClients := buildWithdrawChainClientRegistry(chainProfiles)
+	utxoReserveTTL := time.Duration(helpers.ParseIntEnv("BTC_UTXO_RESERVE_TTL_SEC", 7200)) * time.Second
 	return withdraw.NewService(
 		chainProfiles,
 		[]byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET")),
@@ -165,6 +165,7 @@ func initWithdrawService(
 			Signer:      signerCli,
 			Ledger:      repo.NewLedgerRepo(db),
 			Withdraw:    repo.NewWithdrawRepo(db),
+			UTXOReserve: utxoreserve.NewManager(rdc.RDB, repo.NewUTXOReservationRepo(db), utxoReserveTTL),
 			Risk:        risk.NewNoopApprover(),
 		},
 		producer,
@@ -188,13 +189,13 @@ func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (
 		if err != nil {
 			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
 		}
-		if spec.Family == "evm" {
+		if spec.Family == helpers.FamilyEVM {
 			if evmClient == nil {
 				evmClient = initEVMClient()
 			}
 			registry.RegisterEVM(chainclient.EVMRegistration{Client: evmClient})
 		}
-		if spec.Family == "btc" {
+		if spec.Family == helpers.FamilyBTC {
 			if btcClient == nil {
 				btcClient = initBTCClient()
 			}

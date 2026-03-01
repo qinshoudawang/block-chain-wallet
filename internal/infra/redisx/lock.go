@@ -52,3 +52,16 @@ end`
 	_, err := l.rdb.Eval(ctx, lua, []string{l.key}, l.token).Result()
 	return err
 }
+
+// Acquire acquires a lock and returns an unlock closure.
+// The unlock closure uses a background context and should be safe in deferred paths.
+func Acquire(ctx context.Context, rdb *redis.Client, key string, ttl time.Duration) (func(), error) {
+	if rdb == nil {
+		return nil, errors.New("redis is required")
+	}
+	lock := NewLock(rdb, key, ttl)
+	if err := lock.TryLock(ctx); err != nil {
+		return nil, err
+	}
+	return func() { _ = lock.Unlock(context.Background()) }, nil
+}

@@ -14,5 +14,6 @@ func All(db *gorm.DB) error {
 		&model.LedgerFreeze{},
 		&model.HDWallet{},
 		&model.UserAddress{},
+		&model.UTXOReservation{},
 	)
 }
