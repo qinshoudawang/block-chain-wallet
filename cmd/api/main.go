@@ -14,6 +14,7 @@ import (
 	"wallet-system/internal/address"
 	"wallet-system/internal/api"
 	btcchain "wallet-system/internal/chain/btc"
+	evmchain "wallet-system/internal/chain/evm"
 	"wallet-system/internal/clients"
 	"wallet-system/internal/config"
 	"wallet-system/internal/config/env"
@@ -27,7 +28,6 @@ import (
 	"wallet-system/internal/withdraw/chainclient"
 	signpb "wallet-system/proto/signer"
 
-	"github.com/ethereum/go-ethereum/ethclient"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -88,12 +88,12 @@ func initKafkaProducer() *kafka.Producer {
 	return kafka.NewProducer(brokers, topic)
 }
 
-func initEthClient() *ethclient.Client {
+func initEVMClient() *evmchain.Client {
 	evmProf, err := env.LoadEVMProfileFromEnv()
 	if err != nil {
 		log.Fatalf("invalid evm network config: %v", err)
 	}
-	eth, err := ethclient.Dial(evmProf.RPC)
+	eth, err := evmchain.NewClient(evmProf.RPC)
 	if err != nil {
 		log.Fatalf("init eth client failed chain=%s rpc=%s err=%v", evmProf.Chain, evmProf.RPC, err)
 	}
@@ -181,7 +181,7 @@ func buildChainProfiles() map[string]config.ChainProfile {
 
 func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (*chainclient.Registry, func()) {
 	registry := chainclient.NewRegistry()
-	var evmClient *ethclient.Client
+	var evmClient *evmchain.Client
 	var btcClient *btcchain.Client
 	for chain := range profiles {
 		spec, err := helpers.ResolveChainSpec(chain)
@@ -190,7 +190,7 @@ func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (
 		}
 		if spec.Family == "evm" {
 			if evmClient == nil {
-				evmClient = initEthClient()
+				evmClient = initEVMClient()
 			}
 			registry.RegisterEVM(chainclient.EVMRegistration{Client: evmClient})
 		}

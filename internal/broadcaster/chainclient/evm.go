@@ -14,36 +14,36 @@ import (
 )
 
 type evmClient struct {
-	sender *evm.EVMSender
+	client *evm.Client
 }
 
-func NewEVMClient(sender *evm.EVMSender) Client {
-	return &evmClient{sender: sender}
+func NewEVMClient(client *evm.Client) Client {
+	return &evmClient{client: client}
 }
 
 func (c *evmClient) BroadcastSignedTxHex(ctx context.Context, signedTxHex string) (string, error) {
-	if c == nil || c.sender == nil {
-		return "", errors.New("evm sender is required")
+	if c == nil || c.client == nil {
+		return "", errors.New("evm client is required")
 	}
 	raw, err := hex.DecodeString(strings.TrimPrefix(signedTxHex, "0x"))
 	if err != nil {
 		return "", err
 	}
-	return c.sender.Broadcast(ctx, raw)
+	return c.client.Broadcast(ctx, raw)
 }
 
 func (c *evmClient) GetLatestHeight(ctx context.Context) (uint64, error) {
-	if c == nil || c.sender == nil {
-		return 0, errors.New("evm sender is required")
+	if c == nil || c.client == nil {
+		return 0, errors.New("evm client is required")
 	}
-	return c.sender.LatestHeight(ctx)
+	return c.client.LatestHeight(ctx)
 }
 
 func (c *evmClient) GetConfirmation(ctx context.Context, txHash string, amount string, latestHeight uint64) (*Confirmation, error) {
-	if c == nil || c.sender == nil {
-		return nil, errors.New("evm sender is required")
+	if c == nil || c.client == nil {
+		return nil, errors.New("evm client is required")
 	}
-	receipt, err := c.sender.TransactionReceipt(ctx, common.HexToHash(txHash))
+	receipt, err := c.client.TransactionReceipt(ctx, common.HexToHash(txHash))
 	if err != nil {
 		// Not found / not indexed yet: caller treats as pending.
 		return nil, nil

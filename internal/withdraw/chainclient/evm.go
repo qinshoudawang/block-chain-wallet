@@ -6,20 +6,19 @@ import (
 	"math/big"
 
 	"wallet-system/internal/chain/evm"
+	"wallet-system/internal/withdraw/nonce"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/redis/go-redis/v9"
 )
 
 type evmClient struct {
-	eth *ethclient.Client
+	evm *evm.Client
 }
 
-func newEVMClient(eth *ethclient.Client) Client {
-	return &evmClient{eth: eth}
+func newEVMClient(cli *evm.Client) Client {
+	return &evmClient{evm: cli}
 }
-
-func (c *evmClient) RequiresNonce() bool { return true }
 
 func (c *evmClient) ValidateWithdrawInput(chain string, to string, amount string) (string, *big.Int, error) {
 	addr := common.HexToAddress(to)
@@ -33,11 +32,11 @@ func (c *evmClient) ValidateWithdrawInput(chain string, to string, amount string
 	return addr.Hex(), amt, nil
 }
 
-func (c *evmClient) AllocateNonce(ctx context.Context, rt Runtime, nonceFloorProvider NonceFloorProvider) (uint64, error) {
-	if c == nil || c.eth == nil {
+func (c *evmClient) AllocateEVMNonce(ctx context.Context, redisClient *redis.Client, rt Runtime, nonceFloorProvider NonceFloorProvider) (uint64, error) {
+	if c == nil || c.evm == nil {
 		return 0, errors.New("evm client is required")
 	}
-	if rt.Redis == nil {
+	if redisClient == nil {
 		return 0, errors.New("redis is required")
 	}
 	if nonceFloorProvider == nil {
@@ -48,7 +47,9 @@ func (c *evmClient) AllocateNonce(ctx context.Context, rt Runtime, nonceFloorPro
 	}
 	from := common.HexToAddress(rt.FromAddress)
 
-	nm := evm.NewNonceManager(rt.Redis, c.eth, rt.Chain, from)
+	nm := nonce.NewManager(redisClient, rt.Chain, from.Hex(), func(ctx context.Context) (uint64, error) {
+		return c.evm.PendingNonceAt(ctx, from)
+	})
 	nm.WithNonceFloorProvider(nonceFloorProvider)
 	if err := nm.EnsureInitialized(ctx); err != nil {
 		return 0, err
@@ -63,7 +64,7 @@ func (c *evmClient) BuildUnsignedWithdrawTx(
 	amount *big.Int,
 	nonce uint64,
 ) ([]byte, error) {
-	if c == nil || c.eth == nil {
+	if c == nil || c.evm == nil {
 		return nil, errors.New("evm client is required")
 	}
 	if rt.ChainID == nil {
@@ -80,5 +81,5 @@ func (c *evmClient) BuildUnsignedWithdrawTx(
 	}
 	from := common.HexToAddress(rt.FromAddress)
 	to := common.HexToAddress(toAddr)
-	return evm.NewEVMBuilder(c.eth).BuildUnsignedTx(ctx, from, to, amount, nil, rt.ChainID, nonce)
+	return c.evm.BuildUnsignedTx(ctx, from, to, amount, nil, rt.ChainID, nonce)
 }

@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"wallet-system/internal/chain/btc"
+	"wallet-system/internal/chain/evm"
 
 	"wallet-system/internal/helpers"
-
-	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 type Registry struct {
@@ -16,7 +15,7 @@ type Registry struct {
 }
 
 type EVMRegistration struct {
-	Client *ethclient.Client
+	Client *evm.Client
 }
 
 type BTCRegistration struct {

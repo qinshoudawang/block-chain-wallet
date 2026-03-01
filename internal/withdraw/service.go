@@ -55,6 +55,12 @@ type Service struct {
 	Producer   *kafka.Producer
 }
 
+type NonceAllocation struct {
+	Value    uint64
+	HasNonce bool
+	Unlock   func()
+}
+
 func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, producer *kafka.Producer) *Service {
 	if deps.Ledger == nil {
 		panic("ledger repo is required")
@@ -143,36 +149,37 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 	}()
 
 	// 3) Allocate nonce for nonce-based chains (e.g. EVM) under a short lock.
-	nonce, noncePtr, unlockNonce, err := s.allocateNonceIfNeeded(ctx, chain, profile, chainClient)
+	nonceAlloc, err := s.allocateNonceIfNeeded(ctx, chain, profile, chainClient)
 	if err != nil {
 		return nil, err
 	}
-	if unlockNonce != nil {
-		defer unlockNonce()
+	if nonceAlloc.Unlock != nil {
+		defer nonceAlloc.Unlock()
 	}
+	logNonce := nonceForLog(nonceAlloc.HasNonce, nonceAlloc.Value)
 
 	// 4) Build chain-specific unsigned transaction payload.
-	unsignedTx, err := chainClient.BuildUnsignedWithdrawTx(ctx, s.chainRuntime(chain, profile), toAddr, amt, nonce)
+	unsignedTx, err := chainClient.BuildUnsignedWithdrawTx(ctx, s.chainRuntime(chain, profile), toAddr, amt, nonceAlloc.Value)
 	if err != nil {
-		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s nonce=%s err=%v", chain, fromAddr, toAddr, nonceForLog(noncePtr), err)
+		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s nonce=%s err=%v", chain, fromAddr, toAddr, logNonce, err)
 		return nil, err
 	}
 
 	// 5) Request signer service to sign the payload.
 	sresp, err := s.signWithdraw(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, unsignedTx)
 	if err != nil {
-		log.Printf("[withdraw-service] sign withdraw failed chain=%s withdraw_id=%s request_id=%s nonce=%s err=%v", chain, withdrawID, requestID, nonceForLog(noncePtr), err)
+		log.Printf("[withdraw-service] sign withdraw failed chain=%s withdraw_id=%s request_id=%s nonce=%s err=%v", chain, withdrawID, requestID, logNonce, err)
 		return nil, err
 	}
-	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s nonce=%s signed_size=%d", chain, withdrawID, requestID, nonceForLog(noncePtr), len(sresp.SignedTx))
+	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s nonce=%s signed_size=%d", chain, withdrawID, requestID, logNonce, len(sresp.SignedTx))
 
 	// 6) Persist signed order and return task for broadcaster enqueue.
-	signedPayload, signedPayloadEncoding, err := s.insertSignedOrder(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, noncePtr, sresp.SignedTx, "")
+	signedPayload, signedPayloadEncoding, err := s.insertSignedOrder(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, nonceAsPtr(nonceAlloc.HasNonce, nonceAlloc.Value), sresp.SignedTx, "")
 	if err != nil {
-		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s nonce=%s err=%v", chain, withdrawID, requestID, nonceForLog(noncePtr), err)
+		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s nonce=%s err=%v", chain, withdrawID, requestID, logNonce, err)
 		return nil, err
 	}
-	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s nonce=%s", chain, withdrawID, requestID, nonceForLog(noncePtr))
+	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s nonce=%s", chain, withdrawID, requestID, logNonce)
 
 	return &broadcaster.BroadcastTask{
 		Version:               1,
@@ -182,7 +189,7 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		From:                  fromAddr,
 		To:                    toAddr,
 		Amount:                in.Amount,
-		Nonce:                 noncePtr,
+		Nonce:                 nonceAsPtr(nonceAlloc.HasNonce, nonceAlloc.Value),
 		SignedPayload:         signedPayload,
 		SignedPayloadEncoding: signedPayloadEncoding,
 		ChainMetaJSON:         "",
@@ -272,7 +279,6 @@ func (s *Service) insertSignedOrder(
 
 func (s *Service) chainRuntime(chain string, profile ChainProfile) chainclient.Runtime {
 	return chainclient.Runtime{
-		Redis:       s.deps.Redis,
 		Chain:       chain,
 		ChainID:     profile.ChainID,
 		FromAddress: profile.FromAddress,
@@ -287,29 +293,65 @@ func (s *Service) allocateNonceIfNeeded(
 	chain string,
 	profile ChainProfile,
 	chainClient chainclient.Client,
-) (nonce uint64, noncePtr *uint64, unlock func(), err error) {
-	if !chainClient.RequiresNonce() {
-		return 0, nil, nil, nil
+) (NonceAllocation, error) {
+	spec, err := helpers.ResolveChainSpec(chain)
+	if err != nil {
+		return NonceAllocation{}, err
+	}
+	switch spec.Family {
+	case "evm":
+		return s.allocateEVMNonce(ctx, chain, profile, chainClient)
+	default:
+		return NonceAllocation{}, nil
+	}
+}
+
+func (s *Service) allocateEVMNonce(
+	ctx context.Context,
+	chain string,
+	profile ChainProfile,
+	chainClient chainclient.Client,
+) (NonceAllocation, error) {
+	allocator, ok := chainClient.(chainclient.EVMNonceAllocator)
+	if !ok {
+		return NonceAllocation{}, errors.New("evm nonce allocator not supported by chain client")
 	}
 	fromAddr := profile.FromAddress
+	return s.withNonceLock(ctx, chain, fromAddr, func() (uint64, error) {
+		return allocator.AllocateEVMNonce(ctx, s.deps.Redis, s.chainRuntime(chain, profile), func(ctx context.Context) (uint64, error) {
+			return s.deps.Withdraw.NextNonceFloor(ctx, chain, fromAddr)
+		})
+	})
+}
+
+func (s *Service) withNonceLock(
+	ctx context.Context,
+	chain string,
+	fromAddr string,
+	allocate func() (uint64, error),
+) (NonceAllocation, error) {
+	if s.deps.Redis == nil {
+		return NonceAllocation{}, errors.New("redis is required")
+	}
 	lockKey := "lock:nonce:" + chain + ":" + fromAddr
 	lock := redisx.NewLock(s.deps.Redis, lockKey, 8*time.Second)
 	if err := lock.TryLock(ctx); err != nil {
 		log.Printf("[withdraw-service] nonce lock busy chain=%s from=%s err=%v", chain, fromAddr, err)
-		return 0, nil, nil, errors.New("busy")
+		return NonceAllocation{}, errors.New("busy")
 	}
-	unlock = func() { _ = lock.Unlock(context.Background()) }
+	unlock := func() { _ = lock.Unlock(context.Background()) }
 
-	nonce, err = chainClient.AllocateNonce(ctx, s.chainRuntime(chain, profile), func(ctx context.Context) (uint64, error) {
-		return s.deps.Withdraw.NextNonceFloor(ctx, chain, fromAddr)
-	})
+	nonce, err := allocate()
 	if err != nil {
 		log.Printf("[withdraw-service] nonce allocate failed chain=%s from=%s err=%v", chain, fromAddr, err)
 		unlock()
-		return 0, nil, nil, errors.New("nonce allocate failed")
+		return NonceAllocation{}, errors.New("nonce allocate failed")
 	}
-	noncePtr = &nonce
-	return nonce, noncePtr, unlock, nil
+	return NonceAllocation{
+		Value:    nonce,
+		HasNonce: true,
+		Unlock:   unlock,
+	}, nil
 }
 
 func (s *Service) signWithdraw(
@@ -356,11 +398,19 @@ func (s *Service) signWithdraw(
 	return resp, nil
 }
 
-func nonceForLog(v *uint64) string {
-	if v == nil {
+func nonceForLog(hasNonce bool, v uint64) string {
+	if !hasNonce {
 		return "-"
 	}
-	return big.NewInt(0).SetUint64(*v).String()
+	return big.NewInt(0).SetUint64(v).String()
+}
+
+func nonceAsPtr(hasNonce bool, v uint64) *uint64 {
+	if !hasNonce {
+		return nil
+	}
+	n := v
+	return &n
 }
 
 func (s *Service) resolveChainContext(chain string) (string, ChainProfile, chainclient.Client, error) {

@@ -11,8 +11,10 @@ import (
 
 	"wallet-system/internal/broadcaster"
 	broadcasterchain "wallet-system/internal/broadcaster/chainclient"
+	btcchain "wallet-system/internal/chain/btc"
 	"wallet-system/internal/chain/evm"
 	"wallet-system/internal/config"
+	"wallet-system/internal/config/env"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	storagemigrate "wallet-system/internal/storage/migrate"
@@ -40,10 +42,9 @@ func main() {
 	defer producer.Close()
 	consumer := initKafkaConsumer()
 	defer consumer.Close()
-	evmNet := mustLoadEVMNetwork()
-	sender := initEVMSender(evmNet.RPC)
-	defer sender.Close()
-	clients := initBroadcasterChainClients(evmNet, sender)
+	chainProfiles := buildChainProfiles()
+	clients, closeChainClients := buildBroadcasterChainClientRegistry(chainProfiles)
+	defer closeChainClients()
 
 	go broadcaster.RunConsumer(ctx, withdrawRepo, clients, consumer)
 	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
@@ -81,28 +82,82 @@ func initGorm() *gorm.DB {
 	return db
 }
 
-func mustLoadEVMNetwork() config.EVMNetwork {
-	evmNet, err := config.LoadEVMNetworkFromEnv()
+func initEVMClient() *evm.Client {
+	evmProf, err := env.LoadEVMProfileFromEnv()
 	if err != nil {
 		log.Fatalf("invalid evm network config: %v", err)
 	}
-	return evmNet
-}
-
-func initEVMSender(rpc string) *evm.EVMSender {
-	sender, err := evm.NewEVMSender(rpc)
+	client, err := evm.NewClient(evmProf.RPC)
 	if err != nil {
-		log.Fatalf("init sender failed: %v", err)
+		log.Fatalf("init evm client failed: %v", err)
 	}
-	return sender
+	return client
 }
 
-func initBroadcasterChainClients(evmNet config.EVMNetwork, sender *evm.EVMSender) *broadcasterchain.Registry {
-	registry := broadcasterchain.NewRegistry()
-	if err := registry.Register(evmNet.Chain, broadcasterchain.NewEVMClient(sender)); err != nil {
-		log.Fatalf("register broadcaster chain client failed: %v", err)
+func initBTCClient() *btcchain.Client {
+	prof, ok, err := env.LoadBTCProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid btc network config chain=%s err=%v", prof.Chain, err)
 	}
-	return registry
+	if !ok {
+		log.Fatalf("btc profile is not configured for chain=%s", prof.Chain)
+	}
+	cli, err := btcchain.NewClient(btcchain.Config{
+		Host:       prof.Host,
+		User:       prof.User,
+		Pass:       prof.Pass,
+		DisableTLS: prof.DisableTLS,
+		Params:     prof.Params,
+	})
+	if err != nil {
+		log.Fatalf("init btc rpc client failed chain=%s err=%v", prof.Chain, err)
+	}
+	return cli
+}
+
+func buildChainProfiles() map[string]config.ChainProfile {
+	profiles, err := config.LoadChainProfilesFromEnv()
+	if err != nil {
+		log.Fatalf("invalid withdraw profile config: %v", err)
+	}
+	return profiles
+}
+
+func buildBroadcasterChainClientRegistry(profiles map[string]config.ChainProfile) (*broadcasterchain.Registry, func()) {
+	registry := broadcasterchain.NewRegistry()
+	var evmClient *evm.Client
+	var btcClient *btcchain.Client
+
+	for chain := range profiles {
+		spec, err := helpers.ResolveChainSpec(chain)
+		if err != nil {
+			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
+		}
+		if spec.Family == "evm" {
+			if evmClient == nil {
+				evmClient = initEVMClient()
+			}
+			if err := registry.Register(chain, broadcasterchain.NewEVMClient(evmClient)); err != nil {
+				log.Fatalf("register broadcaster chain client failed: %v", err)
+			}
+		}
+		if spec.Family == "btc" {
+			if btcClient == nil {
+				btcClient = initBTCClient()
+			}
+			if err := registry.Register(chain, broadcasterchain.NewBTCClient(btcClient)); err != nil {
+				log.Fatalf("register broadcaster chain client failed: %v", err)
+			}
+		}
+	}
+	return registry, func() {
+		if evmClient != nil {
+			evmClient.Close()
+		}
+		if btcClient != nil {
+			btcClient.Close()
+		}
+	}
 }
 
 func initKafkaProducer() *kafka.Producer {

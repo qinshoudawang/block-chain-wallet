@@ -6,15 +6,22 @@ import (
 	"time"
 
 	"wallet-system/internal/broadcaster/chainclient"
+	"wallet-system/internal/helpers"
 	"wallet-system/internal/storage/repo"
 )
 
 const (
-	maxRetry  = 4
-	threshold = 5
+	maxRetry = 4
 )
 
+type confirmThresholds struct {
+	evm int
+	btc int
+	sol int
+}
+
 func RunConfirmer(ctx context.Context, wr *repo.WithdrawRepo, lr *repo.LedgerRepo, clients *chainclient.Registry) {
+	thresholds := loadConfirmThresholds()
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -38,6 +45,7 @@ func RunConfirmer(ctx context.Context, wr *repo.WithdrawRepo, lr *repo.LedgerRep
 					log.Printf("[confirmer] resolve chain client failed withdraw_id=%s chain=%s err=%v", o.WithdrawID, o.Chain, err)
 					continue
 				}
+				threshold := thresholds.forChain(chain)
 				latest, ok := latestByChain[chain]
 				if !ok {
 					latest, err = cli.GetLatestHeight(ctx)
@@ -96,4 +104,36 @@ func RunConfirmer(ctx context.Context, wr *repo.WithdrawRepo, lr *repo.LedgerRep
 			}
 		}
 	}
+}
+
+func loadConfirmThresholds() confirmThresholds {
+	return confirmThresholds{
+		evm: normalizeThreshold(helpers.ParseIntEnv("EVM_CONFIRM_THRESHOLD", 5), 5),
+		btc: normalizeThreshold(helpers.ParseIntEnv("BTC_CONFIRM_THRESHOLD", 2), 2),
+		sol: normalizeThreshold(helpers.ParseIntEnv("SOL_CONFIRM_THRESHOLD", 5), 5),
+	}
+}
+
+func (t confirmThresholds) forChain(chain string) int {
+	spec, err := helpers.ResolveChainSpec(chain)
+	if err != nil {
+		return 5
+	}
+	switch spec.Family {
+	case "btc":
+		return t.btc
+	case "evm":
+		return t.evm
+	case "sol":
+		return t.sol
+	default:
+		return 5
+	}
+}
+
+func normalizeThreshold(v int, fallback int) int {
+	if v > 0 {
+		return v
+	}
+	return fallback
 }

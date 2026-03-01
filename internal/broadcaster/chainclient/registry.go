@@ -13,10 +13,7 @@ type Registry struct {
 }
 
 func NewRegistry() *Registry {
-	r := &Registry{byChain: make(map[string]Client)}
-	r.Register("btc", newBTCClient())
-	r.Register("sol", newSolanaClient())
-	return r
+	return &Registry{byChain: make(map[string]Client)}
 }
 
 func (r *Registry) Register(chain string, cli Client) error {
