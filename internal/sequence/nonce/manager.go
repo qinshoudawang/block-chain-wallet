@@ -69,6 +69,7 @@ func (m *Manager) EnsureInitialized(ctx context.Context) error {
 		return err
 	}
 
+	// 取DB和链上的最大值
 	if m.nonceFloorProvider != nil {
 		floor, err := m.nonceFloorProvider(ctx)
 		if err != nil {

@@ -44,5 +44,16 @@ func LoadChainProfilesFromEnv() (map[string]ChainProfile, error) {
 			FeeRate:       btc.FeeRate,
 		}
 	}
+	sol, ok, err := env.LoadSOLProfileFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		profiles[sol.Chain] = ChainProfile{
+			Chain:         sol.Chain,
+			FromAddress:   sol.FromAddress,
+			FreezeReserve: sol.FreezeReserve,
+		}
+	}
 	return profiles, nil
 }

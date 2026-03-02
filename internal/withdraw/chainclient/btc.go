@@ -93,9 +93,9 @@ func (c *btcClient) BuildUnsignedWithdrawTx(
 	rt Runtime,
 	toAddr string,
 	amount *big.Int,
-	nonce uint64,
+	sequence uint64,
 ) ([]byte, error) {
-	_ = nonce
+	_ = sequence
 
 	// 1) 解析并校验出入账地址（按链区分主网/测试网）。
 	fromAddr, err := decodeBTCAddressByChain(rt.Chain, rt.FromAddress)

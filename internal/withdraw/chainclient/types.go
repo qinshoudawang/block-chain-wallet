@@ -34,11 +34,6 @@ type SequenceFloorProvider func(context.Context) (uint64, error)
 
 type Client interface {
 	ValidateWithdrawInput(chain string, to string, amount string) (toAddr string, amountValue *big.Int, err error)
-	BuildUnsignedWithdrawTx(ctx context.Context, rt Runtime, toAddr string, amount *big.Int, nonce uint64) ([]byte, error)
-}
-
-// SequenceAllocator allows a chain client to provide chain-specific sequence allocation.
-// If not implemented, caller should fall back to local sequence allocation.
-type SequenceAllocator interface {
 	AllocateSequence(ctx context.Context, redisClient *redis.Client, rt *Runtime, sequenceFloorProvider SequenceFloorProvider) (uint64, error)
+	BuildUnsignedWithdrawTx(ctx context.Context, rt Runtime, toAddr string, amount *big.Int, sequence uint64) ([]byte, error)
 }

@@ -106,6 +106,7 @@ func initSignerService(rdc *redisx.Client, profiles map[string]config.ChainProfi
 	registry := provider.NewRegistry()
 	registerEVMSignerProviders(registry, profiles)
 	registerBTCSignerProvider(registry, profiles)
+	registerSOLSignerProvider(registry, profiles)
 
 	return signer.NewService(rdc.RDB, registry, authSecret, mnemonic)
 }
@@ -153,6 +154,30 @@ func registerBTCSignerProvider(registry *provider.Registry, profiles map[string]
 		}
 		if err := registry.Register(chain, btcSigner); err != nil {
 			log.Fatalf("register btc signer provider failed chain=%s err=%v", chain, err)
+		}
+	}
+}
+
+func registerSOLSignerProvider(registry *provider.Registry, profiles map[string]config.ChainProfile) {
+	priv := helpers.Getenv("SOL_HOT_WALLET_PRIV", "")
+	if priv == "" {
+		return
+	}
+
+	for chain := range profiles {
+		spec, err := helpers.ResolveChainSpec(chain)
+		if err != nil {
+			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
+		}
+		if spec.Family != helpers.FamilySOL {
+			continue
+		}
+		solSigner, err := provider.NewSOLSigner(priv)
+		if err != nil {
+			log.Fatalf("init sol signer failed chain=%s err=%v", chain, err)
+		}
+		if err := registry.Register(chain, solSigner); err != nil {
+			log.Fatalf("register sol signer provider failed chain=%s err=%v", chain, err)
 		}
 	}
 }

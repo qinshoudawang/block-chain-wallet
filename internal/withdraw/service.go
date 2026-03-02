@@ -343,24 +343,12 @@ func (s *Service) allocateSequence(
 	rt *chainclient.Runtime,
 	chainClient chainclient.Client,
 ) (SequenceAllocation, error) {
-	allocator, ok := chainClient.(chainclient.SequenceAllocator)
-	if !ok {
-		return SequenceAllocation{}, errors.New("sequence allocator not supported by chain client")
-	}
-	return s.allocateByChainAllocator(ctx, rt, allocator)
-}
-
-func (s *Service) allocateByChainAllocator(
-	ctx context.Context,
-	rt *chainclient.Runtime,
-	allocator chainclient.SequenceAllocator,
-) (SequenceAllocation, error) {
 	if rt == nil {
 		return SequenceAllocation{}, errors.New("runtime is required")
 	}
 	fromAddr := rt.FromAddress
 	return s.withSequenceLock(ctx, rt.Chain, fromAddr, func() (uint64, error) {
-		return allocator.AllocateSequence(ctx, s.deps.Redis, rt, func(ctx context.Context) (uint64, error) {
+		return chainClient.AllocateSequence(ctx, s.deps.Redis, rt, func(ctx context.Context) (uint64, error) {
 			return s.deps.Withdraw.NextSequenceFloor(ctx, rt.Chain, fromAddr)
 		})
 	})

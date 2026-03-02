@@ -15,6 +15,7 @@ import (
 	"wallet-system/internal/api"
 	btcchain "wallet-system/internal/chain/btc"
 	evmchain "wallet-system/internal/chain/evm"
+	solchain "wallet-system/internal/chain/sol"
 	"wallet-system/internal/clients"
 	"wallet-system/internal/config"
 	"wallet-system/internal/config/env"
@@ -120,6 +121,17 @@ func initBTCClient() *btcchain.Client {
 	return cli
 }
 
+func initSOLClient() *solchain.Client {
+	solProf, ok, err := env.LoadSOLProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid sol network config chain=%s err=%v", solProf.Chain, err)
+	}
+	if !ok {
+		log.Fatalf("sol profile is not configured for chain=%s", solProf.Chain)
+	}
+	return solchain.NewClient(solProf.RPC)
+}
+
 func initGorm() *gorm.DB {
 	dsn := "host=" + helpers.Getenv("DB_HOST", "127.0.0.1") +
 		" port=" + helpers.Getenv("DB_PORT", "5432") +
@@ -184,6 +196,7 @@ func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (
 	registry := chainclient.NewRegistry()
 	var evmClient *evmchain.Client
 	var btcClient *btcchain.Client
+	var solClient *solchain.Client
 	for chain := range profiles {
 		spec, err := helpers.ResolveChainSpec(chain)
 		if err != nil {
@@ -201,6 +214,14 @@ func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (
 			}
 			registry.RegisterBTC(chainclient.BTCRegistration{
 				Client: btcClient,
+			})
+		}
+		if spec.Family == helpers.FamilySOL {
+			if solClient == nil {
+				solClient = initSOLClient()
+			}
+			registry.RegisterSOL(chainclient.SOLRegistration{
+				Client: solClient,
 			})
 		}
 	}

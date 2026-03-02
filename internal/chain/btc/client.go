@@ -1,16 +1,15 @@
 package btc
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"wallet-system/internal/infra/httpx"
 )
 
 type Config struct {
@@ -59,19 +58,8 @@ func NewClient(cfg Config) (*Client, error) {
 		u.Path = "/"
 	}
 	return &Client{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				Proxy:               http.ProxyFromEnvironment,
-				DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-				TLSHandshakeTimeout: 10 * time.Second,
-				ForceAttemptHTTP2:   false,
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		},
-		httpBase: strings.TrimRight(u.String(), "/"),
+		httpClient: httpx.NewClient(30 * time.Second),
+		httpBase:   strings.TrimRight(u.String(), "/"),
 	}, nil
 }
 
@@ -102,14 +90,7 @@ func (c *Client) httpRequest(ctx context.Context, method string, path string, co
 	var lastErr error
 	const maxRetries = 3
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, method, c.httpBase+path, bytes.NewReader(payload))
-		if err != nil {
-			return nil, err
-		}
-		if contentType != "" {
-			req.Header.Set("Content-Type", contentType)
-		}
-		resp, err := c.httpClient.Do(req)
+		status, raw, err := httpx.Do(ctx, c.httpClient, method, c.httpBase+path, contentType, payload)
 		if err != nil {
 			lastErr = err
 			if !isRetryableHTTPError(err) || attempt == maxRetries-1 {
@@ -118,23 +99,13 @@ func (c *Client) httpRequest(ctx context.Context, method string, path string, co
 			time.Sleep(time.Duration(attempt+1) * 300 * time.Millisecond)
 			continue
 		}
-		raw, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			if attempt == maxRetries-1 {
-				return nil, err
-			}
-			time.Sleep(time.Duration(attempt+1) * 300 * time.Millisecond)
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if status < 200 || status >= 300 {
 			msg := strings.TrimSpace(string(raw))
 			if msg == "" {
-				msg = resp.Status
+				msg = fmt.Sprintf("status=%d", status)
 			}
-			lastErr = fmt.Errorf("btc http api status=%d body=%s", resp.StatusCode, msg)
-			if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500) && attempt < maxRetries-1 {
+			lastErr = fmt.Errorf("btc http api status=%d body=%s", status, msg)
+			if (status == http.StatusTooManyRequests || status >= 500) && attempt < maxRetries-1 {
 				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 				continue
 			}

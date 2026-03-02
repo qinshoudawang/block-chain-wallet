@@ -14,6 +14,7 @@ import (
 	broadcasterchain "wallet-system/internal/broadcaster/chainclient"
 	btcchain "wallet-system/internal/chain/btc"
 	"wallet-system/internal/chain/evm"
+	solchain "wallet-system/internal/chain/sol"
 	"wallet-system/internal/config"
 	"wallet-system/internal/config/env"
 	"wallet-system/internal/helpers"
@@ -135,6 +136,17 @@ func initBTCClient() *btcchain.Client {
 	return cli
 }
 
+func initSOLClient() *solchain.Client {
+	prof, ok, err := env.LoadSOLProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid sol network config chain=%s err=%v", prof.Chain, err)
+	}
+	if !ok {
+		log.Fatalf("sol profile is not configured for chain=%s", prof.Chain)
+	}
+	return solchain.NewClient(prof.RPC)
+}
+
 func buildChainProfiles() map[string]config.ChainProfile {
 	profiles, err := config.LoadChainProfilesFromEnv()
 	if err != nil {
@@ -147,6 +159,7 @@ func buildBroadcasterChainClientRegistry(profiles map[string]config.ChainProfile
 	registry := broadcasterchain.NewRegistry()
 	var evmClient *evm.Client
 	var btcClient *btcchain.Client
+	var solClient *solchain.Client
 
 	for chain := range profiles {
 		spec, err := helpers.ResolveChainSpec(chain)
@@ -166,6 +179,14 @@ func buildBroadcasterChainClientRegistry(profiles map[string]config.ChainProfile
 				btcClient = initBTCClient()
 			}
 			if err := registry.Register(chain, broadcasterchain.NewBTCClient(btcClient)); err != nil {
+				log.Fatalf("register broadcaster chain client failed: %v", err)
+			}
+		}
+		if spec.Family == helpers.FamilySOL {
+			if solClient == nil {
+				solClient = initSOLClient()
+			}
+			if err := registry.Register(chain, broadcasterchain.NewSOLClient(solClient)); err != nil {
 				log.Fatalf("register broadcaster chain client failed: %v", err)
 			}
 		}
