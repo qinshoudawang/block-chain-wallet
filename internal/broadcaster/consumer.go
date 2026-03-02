@@ -13,7 +13,6 @@ import (
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/sequence/utxoreserve"
-	"wallet-system/internal/storage/model"
 	"wallet-system/internal/storage/repo"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -130,7 +129,7 @@ func (c *Consumer) handleBroadcastError(ctx context.Context, task BroadcastTask,
 		if _, dbErr := c.withdrawRepo.MarkFailed(ctx, task.WithdrawID, broadcastErr.Error()); dbErr != nil {
 			log.Printf("mark failed failed withdraw=%s err=%v", task.WithdrawID, dbErr)
 		}
-		c.releaseReservation(ctx, task.WithdrawID, task.Chain, task.ReservationType)
+		c.releaseReservation(ctx, task.WithdrawID, task.Chain)
 		c.publishDLQTask(ctx, task, string(msg.Key))
 		log.Printf("DLQ withdraw=%s req=%s err=%v", task.WithdrawID, task.RequestID, broadcastErr)
 		c.commit(ctx, msg)
@@ -144,8 +143,8 @@ func (c *Consumer) handleBroadcastError(ctx context.Context, task BroadcastTask,
 	c.commit(ctx, msg)
 }
 
-func (c *Consumer) releaseReservation(ctx context.Context, withdrawID string, chain string, reservationType string) {
-	if c.utxoReserve == nil || reservationType != string(model.ReservationTypeUTXO) {
+func (c *Consumer) releaseReservation(ctx context.Context, withdrawID string, chain string) {
+	if c.utxoReserve == nil || !helpers.NeedReservation(chain) {
 		return
 	}
 	if err := c.utxoReserve.ReleaseByWithdrawID(ctx, withdrawID); err != nil {

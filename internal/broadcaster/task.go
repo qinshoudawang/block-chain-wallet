@@ -14,7 +14,6 @@ type BroadcastTask struct {
 	To                    string `json:"to"`
 	Amount                string `json:"amount"`
 	Sequence              uint64 `json:"sequence"`
-	ReservationType       string `json:"reservation_type,omitempty"`
 	SignedPayload         string `json:"signed_payload"`
 	SignedPayloadEncoding string `json:"signed_payload_encoding"`
 	ChainMetaJSON         string `json:"chain_meta_json,omitempty"`

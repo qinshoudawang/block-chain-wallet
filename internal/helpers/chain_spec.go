@@ -92,3 +92,13 @@ func evmSpec(canonical string) ChainSpec {
 		PathFmt:        "m/44'/60'/0'/0/%d",
 	}
 }
+
+// NeedReservation indicates whether the chain requires reservation management.
+// Current rule: BTC family uses UTXO reservation.
+func NeedReservation(chain string) bool {
+	spec, err := ResolveChainSpec(chain)
+	if err != nil {
+		return false
+	}
+	return spec.Family == FamilyBTC
+}

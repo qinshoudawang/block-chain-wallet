@@ -3,7 +3,6 @@ package model
 import "time"
 
 type WithdrawStatus string
-type ReservationType string
 
 const (
 	StatusINIT         WithdrawStatus = "INIT"
@@ -13,9 +12,6 @@ const (
 	StatusBROADCASTED  WithdrawStatus = "BROADCASTED"
 	StatusCONFIRMED    WithdrawStatus = "CONFIRMED"
 	StatusFAILED       WithdrawStatus = "FAILED"
-
-	ReservationTypeNone ReservationType = ""
-	ReservationTypeUTXO ReservationType = "UTXO"
 )
 
 type WithdrawOrder struct {
@@ -35,9 +31,8 @@ type WithdrawOrder struct {
 
 	TxHash string `gorm:"type:varchar(128);index"`
 
-	NetworkFeeAmount  string          `gorm:"type:varchar(80)"`
-	ActualSpentAmount string          `gorm:"type:varchar(80)"`
-	ReservationType   ReservationType `gorm:"type:varchar(16);not null;default:''"`
+	NetworkFeeAmount  string `gorm:"type:varchar(80)"`
+	ActualSpentAmount string `gorm:"type:varchar(80)"`
 
 	Status      WithdrawStatus `gorm:"type:varchar(24);not null;index:idx_status_next_retry,priority:1;index:idx_status_updated,priority:1"`
 	RetryCount  int            `gorm:"not null;default:0"`

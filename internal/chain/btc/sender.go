@@ -1,57 +1,76 @@
 package btc
 
 import (
-	"bytes"
+	"context"
 	"encoding/hex"
-	"errors"
 	"strings"
 
 	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcutil"
 )
 
 func (c *Client) BroadcastRawTxHex(rawTxHex string) (string, error) {
-	if c == nil || c.cli == nil {
-		return "", errors.New("btc rpc client is required")
-	}
-	raw, err := hex.DecodeString(strings.TrimPrefix(strings.TrimSpace(rawTxHex), "0x"))
-	if err != nil {
+	rawTxHex = strings.TrimPrefix(strings.TrimSpace(rawTxHex), "0x")
+	if _, err := hex.DecodeString(rawTxHex); err != nil {
 		return "", err
 	}
-	tx := &wire.MsgTx{}
-	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
-		return "", err
-	}
-	txHash, err := c.cli.SendRawTransaction(tx, false)
-	if err != nil {
-		return "", err
-	}
-	return txHash.String(), nil
+	return c.postRawTransaction(context.Background(), rawTxHex)
 }
 
 func (c *Client) LatestHeight() (uint64, error) {
-	if c == nil || c.cli == nil {
-		return 0, errors.New("btc rpc client is required")
-	}
-	n, err := c.cli.GetBlockCount()
-	if err != nil {
-		return 0, err
-	}
-	if n < 0 {
-		return 0, errors.New("invalid btc block height")
-	}
-	return uint64(n), nil
+	return c.fetchTipHeight(context.Background())
 }
 
 func (c *Client) GetRawTransactionVerbose(txHash string) (*btcjson.TxRawResult, error) {
-	if c == nil || c.cli == nil {
-		return nil, errors.New("btc rpc client is required")
-	}
-	h, err := chainhash.NewHashFromStr(strings.TrimSpace(txHash))
+	row, err := c.fetchTransaction(context.Background(), txHash)
 	if err != nil {
 		return nil, err
 	}
-	return c.cli.GetRawTransactionVerbose(h)
+	out := &btcjson.TxRawResult{
+		Txid:      row.TxID,
+		Version:   row.Version,
+		LockTime:  row.Locktime,
+		Size:      row.Size,
+		Weight:    row.Weight,
+		Vsize:     int32((row.Weight + 3) / 4),
+		BlockHash: row.Status.BlockHash,
+		Blocktime: row.Status.BlockTime,
+		Time:      row.Status.BlockTime,
+		Vin:       make([]btcjson.Vin, 0, len(row.Vin)),
+		Vout:      make([]btcjson.Vout, 0, len(row.Vout)),
+	}
+	if row.Status.Confirmed && row.Status.BlockHeight > 0 {
+		if tip, err := c.LatestHeight(); err == nil && tip >= uint64(row.Status.BlockHeight) {
+			out.Confirmations = tip - uint64(row.Status.BlockHeight) + 1
+		}
+	}
+	for _, vin := range row.Vin {
+		item := btcjson.Vin{
+			Txid:     vin.TxID,
+			Vout:     vin.Vout,
+			Sequence: vin.Sequence,
+			Witness:  vin.Witness,
+		}
+		if vin.IsCoinbase {
+			if vin.Coinbase != "" {
+				item.Coinbase = vin.Coinbase
+			} else {
+				item.Coinbase = "coinbase"
+			}
+		}
+		out.Vin = append(out.Vin, item)
+	}
+	for i, vout := range row.Vout {
+		out.Vout = append(out.Vout, btcjson.Vout{
+			Value: btcutil.Amount(vout.Value).ToBTC(),
+			N:     uint32(i),
+			ScriptPubKey: btcjson.ScriptPubKeyResult{
+				Asm:     vout.ScriptPubKeyAsm,
+				Hex:     vout.ScriptPubKey,
+				Type:    vout.ScriptPubKeyType,
+				Address: vout.ScriptPubKeyAddr,
+			},
+		})
+	}
+	return out, nil
 }
-

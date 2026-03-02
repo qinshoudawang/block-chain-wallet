@@ -64,7 +64,6 @@ func (r *Replayer) tryReplay(ctx context.Context, o model.WithdrawOrder) {
 		To:                    o.ToAddr,
 		Amount:                o.Amount,
 		Sequence:              o.Sequence,
-		ReservationType:       string(o.ReservationType),
 		SignedPayload:         o.SignedPayload,
 		SignedPayloadEncoding: normalizeSignedPayloadEncoding(o.SignedPayloadEncoding),
 		ChainMetaJSON:         o.ChainMetaJSON,

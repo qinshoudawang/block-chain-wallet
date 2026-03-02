@@ -7,8 +7,8 @@ import (
 	"errors"
 	"math"
 	"strconv"
+	"strings"
 
-	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -16,9 +16,6 @@ import (
 )
 
 func (c *Client) ListUnspentByAddress(ctx context.Context, addr btcutil.Address, minConf int) ([]UTXO, error) {
-	if c == nil || c.cli == nil {
-		return nil, errors.New("btc rpc client is required")
-	}
 	if addr == nil {
 		return nil, errors.New("btc address is required")
 	}
@@ -30,49 +27,62 @@ func (c *Client) ListUnspentByAddress(ctx context.Context, addr btcutil.Address,
 		return nil, ctx.Err()
 	default:
 	}
-	items, err := c.cli.ListUnspentMinMaxAddresses(minConf, math.MaxInt32, []btcutil.Address{addr})
+
+	rows, err := c.fetchAddressUTXOs(ctx, addr.EncodeAddress())
 	if err != nil {
 		return nil, err
 	}
-	utxos := make([]UTXO, 0, len(items))
-	for _, item := range items {
-		if !item.Spendable {
+	tip, _ := c.fetchTipHeight(ctx)
+	utxos := make([]UTXO, 0, len(rows))
+	for _, item := range rows {
+		if item.Value <= 0 {
 			continue
 		}
-		sats, err := btcutil.NewAmount(item.Amount)
-		if err != nil || sats <= 0 {
+		var conf int64
+		if item.Status.Confirmed && item.Status.BlockHeight > 0 && tip >= uint64(item.Status.BlockHeight) {
+			conf = int64(tip) - item.Status.BlockHeight + 1
+		}
+		if conf < int64(minConf) {
 			continue
 		}
 		utxos = append(utxos, UTXO{
-			TxID:          item.TxID,
+			TxID:          strings.TrimSpace(item.TxID),
 			Vout:          item.Vout,
-			ValueSat:      int64(sats),
-			Confirmations: item.Confirmations,
+			ValueSat:      item.Value,
+			Confirmations: conf,
 		})
 	}
 	return utxos, nil
 }
 
 func (c *Client) EstimateSatPerVByte(confTarget int64) (int64, error) {
-	if c == nil || c.cli == nil {
-		return 0, errors.New("btc rpc client is required")
-	}
 	if confTarget <= 0 {
 		confTarget = 2
 	}
-	res, err := c.cli.EstimateSmartFee(confTarget, (*btcjson.EstimateSmartFeeMode)(nil))
+	table, err := c.fetchFeeEstimates(context.Background())
 	if err != nil {
 		return 0, err
 	}
-	if res == nil || res.FeeRate == nil {
+	if len(table) == 0 {
 		return 0, errors.New("btc fee rate unavailable")
 	}
-	// bitcoind returns BTC/kvB. Convert to sat/vB.
-	satPerVByte := int64((*res.FeeRate) * 1e8 / 1000)
-	if satPerVByte <= 0 {
+	targetKey := strconv.FormatInt(confTarget, 10)
+	rate, ok := table[targetKey]
+	if !ok || rate <= 0 {
+		rate = 0
+		for _, v := range table {
+			if v <= 0 {
+				continue
+			}
+			if rate == 0 || v < rate {
+				rate = v
+			}
+		}
+	}
+	if rate <= 0 {
 		return 0, errors.New("invalid btc fee rate")
 	}
-	return satPerVByte, nil
+	return int64(math.Ceil(rate)), nil
 }
 
 type UnsignedTxPrevout struct {

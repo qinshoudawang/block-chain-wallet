@@ -143,7 +143,6 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		return nil, err
 	}
 	utxoReserved := false
-	reservationType := model.ReservationTypeNone
 	defer func() {
 		if err == nil {
 			return
@@ -170,7 +169,7 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 
 	// 4) Build chain-specific unsigned transaction payload.
 	var unsignedTx []byte
-	unsignedTx, reservationType, err = s.prepareUnsignedTx(
+	unsignedTx, utxoReserved, err = s.prepareUnsignedTx(
 		ctx,
 		chainClient,
 		rt,
@@ -203,7 +202,6 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		sequenceAlloc.Value,
 		sresp.SignedTx,
 		"",
-		reservationType,
 	)
 	if err != nil {
 		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s sequence=%s err=%v", chain, withdrawID, requestID, logSequence, err)
@@ -220,7 +218,6 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		To:                    toAddr,
 		Amount:                in.Amount,
 		Sequence:              sequenceAlloc.Value,
-		ReservationType:       string(reservationType),
 		SignedPayload:         signedPayload,
 		SignedPayloadEncoding: signedPayloadEncoding,
 		ChainMetaJSON:         "",
@@ -274,7 +271,6 @@ func (s *Service) insertSignedOrder(
 	sequence uint64,
 	signedTx []byte,
 	chainMetaJSON string,
-	reservationType model.ReservationType,
 ) (signedPayload string, signedPayloadEncoding string, err error) {
 	spec, err := helpers.ResolveChainSpec(chain)
 	if err != nil {
@@ -299,7 +295,6 @@ func (s *Service) insertSignedOrder(
 		ToAddr:                toAddr,
 		Amount:                amount,
 		Sequence:              sequence,
-		ReservationType:       reservationType,
 		SignedPayload:         signedPayload,
 		SignedPayloadEncoding: signedPayloadEncoding,
 		ChainMetaJSON:         chainMetaJSON,
@@ -332,15 +327,15 @@ func (s *Service) prepareUnsignedTx(
 	toAddr string,
 	amount *big.Int,
 	sequence uint64,
-) ([]byte, model.ReservationType, error) {
+) ([]byte, bool, error) {
 	unsignedTx, err := chainClient.BuildUnsignedWithdrawTx(ctx, rt, toAddr, amount, sequence)
 	if err != nil {
-		return nil, model.ReservationTypeNone, err
+		return nil, false, err
 	}
 	if rt.ReserveUTXO != nil {
-		return unsignedTx, model.ReservationTypeUTXO, nil
+		return unsignedTx, true, nil
 	}
-	return unsignedTx, model.ReservationTypeNone, nil
+	return unsignedTx, false, nil
 }
 
 func (s *Service) allocateSequence(

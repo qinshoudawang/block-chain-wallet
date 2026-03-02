@@ -139,7 +139,7 @@ func (c *Confirmer) confirmFinal(ctx context.Context, chain string, o model.With
 		"[confirmer] confirm settled withdraw_id=%s tx_hash=%s chain=%s block=%d conf=%d threshold=%d",
 		o.WithdrawID, o.TxHash, chain, cf.BlockNumber, cf.Confirmations, threshold,
 	)
-	if c.utxoReserve != nil && o.ReservationType == model.ReservationTypeUTXO {
+	if c.utxoReserve != nil && helpers.NeedReservation(chain) {
 		if err := c.utxoReserve.ReleaseByWithdrawID(ctx, o.WithdrawID); err != nil {
 			log.Printf("[confirmer] release utxo reservation failed withdraw_id=%s chain=%s err=%v", o.WithdrawID, chain, err)
 		}
