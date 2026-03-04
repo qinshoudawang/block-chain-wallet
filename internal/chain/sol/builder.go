@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/gagliardetto/solana-go"
+	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
 	"github.com/gagliardetto/solana-go/programs/system"
 	"github.com/gagliardetto/solana-go/rpc"
 )
@@ -16,7 +17,7 @@ type UnsignedWithdrawTx struct {
 	TxBase64 string `json:"tx_base64"`
 }
 
-func (c *Client) BuildUnsignedWithdrawTx(ctx context.Context, from string, to string, amount uint64) ([]byte, error) {
+func (c *Client) BuildUnsignedWithdrawTx(ctx context.Context, from string, to string, amount uint64, priorityFeeMicroLamports uint64) ([]byte, error) {
 	if err := c.ensureRPC(); err != nil {
 		return nil, err
 	}
@@ -35,7 +36,7 @@ func (c *Client) BuildUnsignedWithdrawTx(ctx context.Context, from string, to st
 	if err != nil {
 		return nil, err
 	}
-	tx, err := buildSystemTransferTx(fromAddr, toAddr, blockhash, amount)
+	tx, err := buildSystemTransferTx(fromAddr, toAddr, blockhash, amount, priorityFeeMicroLamports)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +51,7 @@ func (c *Client) BuildUnsignedWithdrawTx(ctx context.Context, from string, to st
 	return json.Marshal(payload)
 }
 
-func buildSystemTransferTx(from string, to string, recentBlockhash string, amount uint64) (*solana.Transaction, error) {
+func buildSystemTransferTx(from string, to string, recentBlockhash string, amount uint64, priorityFeeMicroLamports uint64) (*solana.Transaction, error) {
 	if amount == 0 {
 		return nil, errors.New("invalid solana amount")
 	}
@@ -70,7 +71,16 @@ func buildSystemTransferTx(from string, to string, recentBlockhash string, amoun
 	if err != nil {
 		return nil, errors.New("invalid solana transfer instruction")
 	}
-	tx, err := solana.NewTransaction([]solana.Instruction{instruction}, blockhash, solana.TransactionPayer(fromPK))
+	instructions := make([]solana.Instruction, 0, 2)
+	if priorityFeeMicroLamports > 0 {
+		priorityIx, err := computebudget.NewSetComputeUnitPriceInstruction(priorityFeeMicroLamports).ValidateAndBuild()
+		if err != nil {
+			return nil, errors.New("invalid solana priority fee")
+		}
+		instructions = append(instructions, priorityIx)
+	}
+	instructions = append(instructions, instruction)
+	tx, err := solana.NewTransaction(instructions, blockhash, solana.TransactionPayer(fromPK))
 	if err != nil {
 		return nil, errors.New("build solana transaction failed")
 	}

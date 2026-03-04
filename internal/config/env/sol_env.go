@@ -12,6 +12,7 @@ type SOLProfile struct {
 	RPC           string
 	FromAddress   string
 	FreezeReserve *big.Int
+	FeeRate       int64
 }
 
 func LoadSOLProfileFromEnv() (SOLProfile, bool, error) {
@@ -37,10 +38,15 @@ func LoadSOLProfileFromEnv() (SOLProfile, bool, error) {
 			return SOLProfile{}, false, errors.New("invalid SOL_WITHDRAW_FEE_RESERVE_LAMPORTS")
 		}
 	}
+	priorityFee := helpers.ParseInt64Env("SOL_PRIORITY_FEE_MICRO_LAMPORTS", 0)
+	if priorityFee < 0 {
+		return SOLProfile{}, false, errors.New("invalid SOL_PRIORITY_FEE_MICRO_LAMPORTS")
+	}
 	return SOLProfile{
 		Chain:         spec.CanonicalChain,
 		RPC:           rpc,
 		FromAddress:   from,
 		FreezeReserve: reserve,
+		FeeRate:       priorityFee,
 	}, true, nil
 }

@@ -53,6 +53,7 @@ func LoadChainProfilesFromEnv() (map[string]ChainProfile, error) {
 			Chain:         sol.Chain,
 			FromAddress:   sol.FromAddress,
 			FreezeReserve: sol.FreezeReserve,
+			FeeRate:       sol.FeeRate,
 		}
 	}
 	return profiles, nil

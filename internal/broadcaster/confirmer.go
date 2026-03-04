@@ -46,7 +46,7 @@ func NewConfirmer(
 		clients:     clients,
 		utxoReserve: utxoReserve,
 		thresholds:  loadConfirmThresholds(),
-		rbfStuckFor: loadBTCRBFStuckThreshold(),
+		rbfStuckFor: loadRBFStuckThreshold(),
 		withdrawRPC: withdrawRPC,
 	}
 }
@@ -116,7 +116,7 @@ func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]u
 		return
 	}
 	if cf == nil {
-		if c.shouldTriggerRBF(chain, o, 0) {
+		if c.shouldTriggerRBF(o, 0) {
 			c.tryRBF(ctx, o, "pending_not_indexed", 0)
 		}
 		return
@@ -126,7 +126,7 @@ func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]u
 		c.confirmFinal(ctx, chain, o, cf, threshold)
 		return
 	}
-	if c.shouldTriggerRBF(chain, o, cf.Confirmations) {
+	if c.shouldTriggerRBF(o, cf.Confirmations) {
 		c.tryRBF(ctx, o, "stuck_unconfirmed", cf.Confirmations)
 	}
 
@@ -139,12 +139,8 @@ func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]u
 	}
 }
 
-func (c *Confirmer) shouldTriggerRBF(chain string, o model.WithdrawOrder, conf int) bool {
+func (c *Confirmer) shouldTriggerRBF(o model.WithdrawOrder, conf int) bool {
 	if c == nil {
-		return false
-	}
-	spec, err := helpers.ResolveChainSpec(chain)
-	if err != nil || spec.Family != helpers.FamilyBTC {
 		return false
 	}
 	if conf > 0 || c.rbfStuckFor <= 0 {
@@ -215,8 +211,8 @@ func loadConfirmThresholds() confirmThresholds {
 	}
 }
 
-func loadBTCRBFStuckThreshold() time.Duration {
-	minutes := helpers.ParseIntEnv("BTC_RBF_STUCK_MINUTES", 30)
+func loadRBFStuckThreshold() time.Duration {
+	minutes := helpers.ParseIntEnv("RBF_STUCK_MINUTES", 30)
 	if minutes <= 0 {
 		return 0
 	}

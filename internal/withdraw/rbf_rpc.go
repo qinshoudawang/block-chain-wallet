@@ -2,6 +2,7 @@ package withdraw
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,7 @@ type rbfOrderContext struct {
 	WithdrawID string
 	OldTxHash  string
 	Order      *model.WithdrawOrder
+	Spec       helpers.ChainSpec
 }
 
 func NewRBFServer(
@@ -102,9 +104,12 @@ func (s *RBFServer) SubmitRBF(ctx context.Context, req *withdrawpb.SubmitRBFRequ
 	if err != nil {
 		return nil, err
 	}
-	newSignedHex := hex.EncodeToString(signResp.SignedTx)
+	newSignedPayload, encoding, err := encodeSignedPayloadByFamily(rbfCtx.Spec.Family, signResp.SignedTx)
+	if err != nil {
+		return nil, err
+	}
 	if ok, err := s.withdrawRepo.SaveRBFSignedPayload(
-		ctx, order.WithdrawID, rbfCtx.OldTxHash, newSignedHex, broadcaster.SignedPayloadEncodingHex,
+		ctx, order.WithdrawID, rbfCtx.OldTxHash, newSignedPayload, encoding,
 	); err != nil || !ok {
 		if err != nil {
 			return nil, err
@@ -121,8 +126,8 @@ func (s *RBFServer) SubmitRBF(ctx context.Context, req *withdrawpb.SubmitRBFRequ
 		To:                    order.ToAddr,
 		Amount:                order.Amount,
 		Sequence:              order.Sequence,
-		SignedPayload:         newSignedHex,
-		SignedPayloadEncoding: broadcaster.SignedPayloadEncodingHex,
+		SignedPayload:         newSignedPayload,
+		SignedPayloadEncoding: encoding,
 		ChainMetaJSON:         order.ChainMetaJSON,
 		CreatedAt:             time.Now().Unix(),
 		Attempt:               0,
@@ -176,19 +181,46 @@ func (s *RBFServer) loadAndValidateRBFOrder(ctx context.Context, req *withdrawpb
 		return nil, err
 	}
 	switch spec.Family {
-	case helpers.FamilyBTC, helpers.FamilyEVM:
+	case helpers.FamilyBTC, helpers.FamilyEVM, helpers.FamilySOL:
 	default:
 		return nil, errors.New("rbf is not supported for this chain family")
 	}
 	if strings.TrimSpace(order.SignedPayload) == "" {
 		return nil, errors.New("signed payload is empty")
 	}
-	if v := strings.TrimSpace(order.SignedPayloadEncoding); v != "" && !strings.EqualFold(v, broadcaster.SignedPayloadEncodingHex) {
-		return nil, errors.New("rbf signed payload encoding must be hex")
+	expectedEncoding, err := expectedSignedPayloadEncodingForFamily(spec.Family)
+	if err != nil {
+		return nil, err
+	}
+	if v := strings.TrimSpace(order.SignedPayloadEncoding); v != "" && !strings.EqualFold(v, expectedEncoding) {
+		return nil, errors.New("rbf signed payload encoding mismatch")
 	}
 	return &rbfOrderContext{
 		WithdrawID: withdrawID,
 		OldTxHash:  oldTxHash,
 		Order:      order,
+		Spec:       spec,
 	}, nil
+}
+
+func expectedSignedPayloadEncodingForFamily(family string) (string, error) {
+	switch family {
+	case helpers.FamilyBTC, helpers.FamilyEVM:
+		return broadcaster.SignedPayloadEncodingHex, nil
+	case helpers.FamilySOL:
+		return broadcaster.SignedPayloadEncodingBase64, nil
+	default:
+		return "", errors.New("unsupported chain family for signed payload encoding")
+	}
+}
+
+func encodeSignedPayloadByFamily(family string, signedTx []byte) (string, string, error) {
+	switch family {
+	case helpers.FamilyBTC, helpers.FamilyEVM:
+		return hex.EncodeToString(signedTx), broadcaster.SignedPayloadEncodingHex, nil
+	case helpers.FamilySOL:
+		return base64.StdEncoding.EncodeToString(signedTx), broadcaster.SignedPayloadEncodingBase64, nil
+	default:
+		return "", "", errors.New("unsupported chain family for signed payload encoding")
+	}
 }
