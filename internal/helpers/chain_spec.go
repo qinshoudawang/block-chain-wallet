@@ -77,6 +77,26 @@ func ResolveChainSpec(chain string) (ChainSpec, error) {
 			Account:        0,
 			PathFmt:        "m/44'/501'/%d'/0'",
 		}, nil
+	case "sol-devnet", "solana-devnet", "sol_devnet":
+		return ChainSpec{
+			CanonicalChain: "sol-devnet",
+			Family:         FamilySOL,
+			IsTestnet:      true,
+			Purpose:        44,
+			CoinType:       501,
+			Account:        0,
+			PathFmt:        "m/44'/501'/%d'/0'",
+		}, nil
+	case "sol-testnet", "solana-testnet", "sol_testnet":
+		return ChainSpec{
+			CanonicalChain: "sol-testnet",
+			Family:         FamilySOL,
+			IsTestnet:      true,
+			Purpose:        44,
+			CoinType:       501,
+			Account:        0,
+			PathFmt:        "m/44'/501'/%d'/0'",
+		}, nil
 	default:
 		return ChainSpec{}, fmt.Errorf("%w: %s", ErrUnsupportedChain, chain)
 	}

@@ -16,6 +16,9 @@ func NewPolicyEngine() *PolicyEngine {
 	if addr := helpers.Getenv("ETH_TO_ADDRESS", ""); addr != "" {
 		whitelist[addr] = true
 	}
+	if addr := helpers.Getenv("SOL_TO_ADDRESS", ""); addr != "" {
+		whitelist[addr] = true
+	}
 	if addr := helpers.Getenv("BTC_TO_ADDRESS", ""); addr != "" {
 		whitelist[addr] = true
 	}
