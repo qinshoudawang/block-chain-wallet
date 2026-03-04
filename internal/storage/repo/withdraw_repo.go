@@ -20,6 +20,16 @@ func NewWithdrawRepo(db *gorm.DB) *WithdrawRepo {
 	return &WithdrawRepo{db: db}
 }
 
+func (r *WithdrawRepo) GetByWithdrawID(ctx context.Context, withdrawID string) (*model.WithdrawOrder, error) {
+	var out model.WithdrawOrder
+	if err := r.db.WithContext(ctx).
+		Where("withdraw_id = ?", withdrawID).
+		First(&out).Error; err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // InsertSigned: withdraw-api 在签名成功后落库 SIGNED，然后再投 Kafka
 func (r *WithdrawRepo) InsertSigned(ctx context.Context, o *model.WithdrawOrder) error {
 	o.Status = model.StatusSIGNED
@@ -54,7 +64,9 @@ func (r *WithdrawRepo) NextSequenceFloor(ctx context.Context, chain, fromAddr st
 // 只允许 SIGNED/BROADCASTING -> BROADCASTED
 func (r *WithdrawRepo) MarkBroadcasted(ctx context.Context, withdrawID, txHash string) (bool, error) {
 	res := r.db.WithContext(ctx).Model(&model.WithdrawOrder{}).
-		Where("withdraw_id = ? AND status IN ?", withdrawID, []model.WithdrawStatus{model.StatusSIGNED, model.StatusBROADCASTING}).
+		Where("withdraw_id = ? AND status IN ?", withdrawID, []model.WithdrawStatus{
+			model.StatusSIGNED, model.StatusBROADCASTING, model.StatusBROADCASTED,
+		}).
 		Updates(map[string]any{
 			"status":        model.StatusBROADCASTED,
 			"tx_hash":       txHash,
@@ -201,4 +213,41 @@ func (r *WithdrawRepo) ConfirmWithSettlement(
 		return nil
 	})
 	return updated, err
+}
+
+func (r *WithdrawRepo) ReplaceBroadcastedSignedTx(
+	ctx context.Context,
+	withdrawID string,
+	prevTxHash string,
+	newSignedPayload string,
+	newTxHash string,
+) (bool, error) {
+	res := r.db.WithContext(ctx).Model(&model.WithdrawOrder{}).
+		Where("withdraw_id = ? AND tx_hash = ? AND status = ?", withdrawID, prevTxHash, model.StatusBROADCASTED).
+		Updates(map[string]any{
+			"signed_payload":          newSignedPayload,
+			"signed_payload_encoding": "hex",
+			"tx_hash":                 newTxHash,
+			"last_error":              "",
+			"next_retry_at":           nil,
+			"updated_at":              time.Now(),
+		})
+	return res.RowsAffected > 0, res.Error
+}
+
+func (r *WithdrawRepo) SaveRBFSignedPayload(
+	ctx context.Context,
+	withdrawID string,
+	prevTxHash string,
+	newSignedPayload string,
+	encoding string,
+) (bool, error) {
+	res := r.db.WithContext(ctx).Model(&model.WithdrawOrder{}).
+		Where("withdraw_id = ? AND tx_hash = ? AND status = ?", withdrawID, prevTxHash, model.StatusBROADCASTED).
+		Updates(map[string]any{
+			"signed_payload":          newSignedPayload,
+			"signed_payload_encoding": encoding,
+			"updated_at":              time.Now(),
+		})
+	return res.RowsAffected > 0, res.Error
 }

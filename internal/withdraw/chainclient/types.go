@@ -32,8 +32,26 @@ type Runtime struct {
 
 type SequenceFloorProvider func(context.Context) (uint64, error)
 
+type RBFUnsignedBuildResult struct {
+	UnsignedPayload []byte
+	OldFeeRate      int64
+	NewFeeRate      int64
+	OldFee          int64
+	NewFee          int64
+}
+
 type Client interface {
 	ValidateWithdrawInput(chain string, to string, amount string) (toAddr string, amountValue *big.Int, err error)
 	AllocateSequence(ctx context.Context, redisClient *redis.Client, rt *Runtime, sequenceFloorProvider SequenceFloorProvider) (uint64, error)
 	BuildUnsignedWithdrawTx(ctx context.Context, rt Runtime, toAddr string, amount *big.Int, sequence uint64) ([]byte, error)
+	BuildRBFUnsignedWithdrawTx(
+		ctx context.Context,
+		chain string,
+		fromAddr string,
+		toAddr string,
+		amount string,
+		signedPayload string,
+		feeTargetBlocks int64,
+		minDeltaSatPerVByte int64,
+	) (*RBFUnsignedBuildResult, error)
 }

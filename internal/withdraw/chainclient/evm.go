@@ -86,3 +86,16 @@ func (c *evmClient) BuildUnsignedWithdrawTx(
 	to := common.HexToAddress(toAddr)
 	return c.evm.BuildUnsignedTx(ctx, from, to, amount, nil, rt.ChainID, nonce)
 }
+
+func (c *evmClient) BuildRBFUnsignedWithdrawTx(
+	_ context.Context,
+	_ string,
+	_ string,
+	_ string,
+	_ string,
+	_ string,
+	_ int64,
+	_ int64,
+) (*RBFUnsignedBuildResult, error) {
+	return nil, ErrNotImplemented
+}

@@ -10,6 +10,7 @@ import (
 	"wallet-system/internal/sequence/utxoreserve"
 	"wallet-system/internal/storage/model"
 	"wallet-system/internal/storage/repo"
+	withdrawpb "wallet-system/proto/withdraw"
 )
 
 const (
@@ -23,25 +24,46 @@ type confirmThresholds struct {
 }
 
 type Confirmer struct {
-	wr          *repo.WithdrawRepo
-	lr          *repo.LedgerRepo
-	clients     *chainclient.Registry
-	utxoReserve *utxoreserve.Manager
-	thresholds  confirmThresholds
+	wr           *repo.WithdrawRepo
+	lr           *repo.LedgerRepo
+	clients      *chainclient.Registry
+	utxoReserve  *utxoreserve.Manager
+	thresholds   confirmThresholds
+	rbfStuckFor  time.Duration
+	withdrawRPC  withdrawpb.WithdrawServiceClient
+	rbfFeeTarget int64
+	rbfMinDelta  int64
 }
 
-func NewConfirmer(wr *repo.WithdrawRepo, lr *repo.LedgerRepo, clients *chainclient.Registry, utxoReserve *utxoreserve.Manager) *Confirmer {
+func NewConfirmer(
+	wr *repo.WithdrawRepo,
+	lr *repo.LedgerRepo,
+	clients *chainclient.Registry,
+	utxoReserve *utxoreserve.Manager,
+	withdrawRPC withdrawpb.WithdrawServiceClient,
+) *Confirmer {
 	return &Confirmer{
-		wr:          wr,
-		lr:          lr,
-		clients:     clients,
-		utxoReserve: utxoReserve,
-		thresholds:  loadConfirmThresholds(),
+		wr:           wr,
+		lr:           lr,
+		clients:      clients,
+		utxoReserve:  utxoReserve,
+		thresholds:   loadConfirmThresholds(),
+		rbfStuckFor:  loadBTCRBFStuckThreshold(),
+		withdrawRPC:  withdrawRPC,
+		rbfFeeTarget: normalizeFeeTargetBlocks(helpers.ParseInt64Env("BTC_RBF_FEE_TARGET_BLOCKS", 2)),
+		rbfMinDelta:  normalizeMinRBFDelta(helpers.ParseInt64Env("BTC_RBF_MIN_DELTA_SAT_PER_VBYTE", 1)),
 	}
 }
 
-func RunConfirmer(ctx context.Context, wr *repo.WithdrawRepo, lr *repo.LedgerRepo, clients *chainclient.Registry, utxoReserve *utxoreserve.Manager) {
-	NewConfirmer(wr, lr, clients, utxoReserve).Run(ctx)
+func RunConfirmer(
+	ctx context.Context,
+	wr *repo.WithdrawRepo,
+	lr *repo.LedgerRepo,
+	clients *chainclient.Registry,
+	utxoReserve *utxoreserve.Manager,
+	withdrawRPC withdrawpb.WithdrawServiceClient,
+) {
+	NewConfirmer(wr, lr, clients, utxoReserve, withdrawRPC).Run(ctx)
 }
 
 func (c *Confirmer) Run(ctx context.Context) {
@@ -98,13 +120,18 @@ func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]u
 		return
 	}
 	if cf == nil {
-		// pending / not indexed yet
+		if c.shouldTriggerRBF(chain, o, 0) {
+			c.tryRBF(ctx, o, "pending_not_indexed", 0)
+		}
 		return
 	}
 
 	if cf.Confirmations >= threshold {
 		c.confirmFinal(ctx, chain, o, cf, threshold)
 		return
+	}
+	if c.shouldTriggerRBF(chain, o, cf.Confirmations) {
+		c.tryRBF(ctx, o, "stuck_unconfirmed", cf.Confirmations)
 	}
 
 	ok, err = c.wr.UpdateConfirmations(ctx, o.WithdrawID, cf.BlockNumber, cf.Confirmations, threshold)
@@ -114,6 +141,46 @@ func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]u
 			o.WithdrawID, o.TxHash, chain, cf.BlockNumber, cf.Confirmations, ok, err,
 		)
 	}
+}
+
+func (c *Confirmer) shouldTriggerRBF(chain string, o model.WithdrawOrder, conf int) bool {
+	if c == nil {
+		return false
+	}
+	spec, err := helpers.ResolveChainSpec(chain)
+	if err != nil || spec.Family != helpers.FamilyBTC {
+		return false
+	}
+	if conf > 0 || c.rbfStuckFor <= 0 {
+		return false
+	}
+	return time.Since(o.UpdatedAt) >= c.rbfStuckFor
+}
+
+func (c *Confirmer) tryRBF(
+	ctx context.Context,
+	o model.WithdrawOrder,
+	reason string,
+	confirmations int,
+) {
+	if c.withdrawRPC == nil {
+		return
+	}
+	resp, err := c.withdrawRPC.SubmitBTCRBF(ctx, &withdrawpb.SubmitBTCRBFRequest{
+		WithdrawId:          o.WithdrawID,
+		OldTxHash:           o.TxHash,
+		FeeTargetBlocks:     c.rbfFeeTarget,
+		MinDeltaSatPerVbyte: c.rbfMinDelta,
+	})
+	if err != nil {
+		log.Printf("[confirmer] rbf submit failed withdraw_id=%s tx_hash=%s err=%v", o.WithdrawID, o.TxHash, err)
+		return
+	}
+	log.Printf(
+		"[confirmer] rbf submitted withdraw_id=%s old_tx=%s request_id=%s status=%s reason=%s confirmations=%d stuck_for=%s old_rate=%d new_rate=%d old_fee=%d new_fee=%d",
+		o.WithdrawID, o.TxHash, resp.GetRequestId(), resp.GetStatus(), reason, confirmations, c.rbfStuckFor.String(),
+		resp.GetOldFeeRateSatPerVbyte(), resp.GetNewFeeRateSatPerVbyte(), resp.GetOldFeeSat(), resp.GetNewFeeSat(),
+	)
 }
 
 func (c *Confirmer) confirmFinal(ctx context.Context, chain string, o model.WithdrawOrder, cf *chainclient.Confirmation, threshold int) {
@@ -152,6 +219,28 @@ func loadConfirmThresholds() confirmThresholds {
 		btc: normalizeThreshold(helpers.ParseIntEnv("BTC_CONFIRM_THRESHOLD", 2), 2),
 		sol: normalizeThreshold(helpers.ParseIntEnv("SOL_CONFIRM_THRESHOLD", 5), 5),
 	}
+}
+
+func loadBTCRBFStuckThreshold() time.Duration {
+	minutes := helpers.ParseIntEnv("BTC_RBF_STUCK_MINUTES", 30)
+	if minutes <= 0 {
+		return 0
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+func normalizeFeeTargetBlocks(v int64) int64 {
+	if v > 0 {
+		return v
+	}
+	return 2
+}
+
+func normalizeMinRBFDelta(v int64) int64 {
+	if v > 0 {
+		return v
+	}
+	return 1
 }
 
 func (t confirmThresholds) forChain(chain string) int {

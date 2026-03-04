@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,7 +30,9 @@ import (
 	"wallet-system/internal/withdraw/chainclient"
 	"wallet-system/internal/withdraw/risk"
 	signpb "wallet-system/proto/signer"
+	withdrawpb "wallet-system/proto/withdraw"
 
+	"google.golang.org/grpc"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -50,14 +53,17 @@ func main() {
 	producer := initKafkaProducer()
 	defer producer.Close()
 	chainProfiles := buildChainProfiles()
+	withdrawChainRegistry, closeChainClients := buildWithdrawChainClientRegistry(chainProfiles)
+	defer closeChainClients()
 	signerCli := initSignerClient()
 	defer signerCli.Close()
-	wsvc, closeChainClients := initWithdrawService(rdc, chainProfiles, producer, db, signerCli.Client)
-	defer closeChainClients()
+	wsvc := initWithdrawService(rdc, chainProfiles, withdrawChainRegistry, producer, db, signerCli.Client)
 	asvc := address.NewAddressService(db, signerCli.Client)
 	server := initHTTPServer(wsvc, asvc)
+	withdrawGS, withdrawLis := initWithdrawGRPCServer(db, withdrawChainRegistry, producer, signerCli.Client)
+	defer withdrawLis.Close()
 
-	if err := runHTTPServer(ctx, server); err != nil {
+	if err := runServers(ctx, server, withdrawGS, withdrawLis); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -162,11 +168,11 @@ func initSignerClient() *clients.SignerClient {
 func initWithdrawService(
 	rdc *redisx.Client,
 	chainProfiles map[string]config.ChainProfile,
+	chainRegistry *chainclient.Registry,
 	producer *kafka.Producer,
 	db *gorm.DB,
 	signerCli signpb.SignerServiceClient,
-) (*withdraw.Service, func()) {
-	chainRegistry, closeChainClients := buildWithdrawChainClientRegistry(chainProfiles)
+) *withdraw.Service {
 	utxoReserveTTL := time.Duration(helpers.ParseIntEnv("BTC_UTXO_RESERVE_TTL_SEC", 7200)) * time.Second
 	return withdraw.NewService(
 		chainProfiles,
@@ -181,7 +187,7 @@ func initWithdrawService(
 			Risk:        risk.NewNoopApprover(),
 		},
 		producer,
-	), closeChainClients
+	)
 }
 
 func buildChainProfiles() map[string]config.ChainProfile {
@@ -243,6 +249,53 @@ func initHTTPServer(wsvc *withdraw.Service, asvc *address.AddressService) *http.
 	}
 }
 
+func initWithdrawGRPCServer(
+	db *gorm.DB,
+	chainRegistry *chainclient.Registry,
+	producer *kafka.Producer,
+	signer signpb.SignerServiceClient,
+) (*grpc.Server, net.Listener) {
+	addr := helpers.Getenv("WITHDRAW_GRPC_ADDR", "127.0.0.1:9002")
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("withdraw grpc listen failed: %v", err)
+	}
+	gs := grpc.NewServer(
+		grpc.ConnectionTimeout(3 * time.Second),
+	)
+	withdrawpb.RegisterWithdrawServiceServer(
+		gs,
+		withdraw.NewRBFServer(
+			repo.NewWithdrawRepo(db),
+			chainRegistry,
+			signer,
+			producer,
+			[]byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET")),
+		),
+	)
+	return gs, lis
+}
+
+func runServers(ctx context.Context, httpServer *http.Server, grpcServer *grpc.Server, grpcLis net.Listener) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- runHTTPServer(runCtx, httpServer)
+	}()
+	go func() {
+		errCh <- runWithdrawGRPCServer(runCtx, grpcServer, grpcLis)
+	}()
+	first := <-errCh
+	cancel()
+	second := <-errCh
+	if first != nil {
+		return first
+	}
+	return second
+}
+
 func runHTTPServer(ctx context.Context, server *http.Server) error {
 	errCh := make(chan error, 1)
 
@@ -263,5 +316,38 @@ func runHTTPServer(ctx context.Context, server *http.Server) error {
 		return <-errCh
 	case err := <-errCh:
 		return err
+	}
+}
+
+func runWithdrawGRPCServer(ctx context.Context, gs *grpc.Server, lis net.Listener) error {
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("[withdraw-grpc] listening on %s", lis.Addr().String())
+		errCh <- gs.Serve(lis)
+	}()
+
+	select {
+	case <-ctx.Done():
+		done := make(chan struct{})
+		go func() {
+			gs.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			gs.Stop()
+			<-done
+		}
+		err := <-errCh
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			return err
+		}
+		return nil
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			return err
+		}
+		return nil
 	}
 }

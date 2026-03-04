@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package withdraw;
+
+option go_package = "proto/withdraw;withdraw";
+
+service WithdrawService {
+  rpc SubmitBTCRBF(SubmitBTCRBFRequest) returns (SubmitBTCRBFResponse);
+}
+
+message SubmitBTCRBFRequest {
+  string withdraw_id = 1;
+  string old_tx_hash = 2;
+  int64 fee_target_blocks = 3;
+  int64 min_delta_sat_per_vbyte = 4;
+}
+
+message SubmitBTCRBFResponse {
+  string withdraw_id = 1;
+  string request_id = 2;
+  string status = 3;
+  int64 old_fee_rate_sat_per_vbyte = 4;
+  int64 new_fee_rate_sat_per_vbyte = 5;
+  int64 old_fee_sat = 6;
+  int64 new_fee_sat = 7;
+}

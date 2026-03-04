@@ -15,6 +15,7 @@ import (
 	btcchain "wallet-system/internal/chain/btc"
 	"wallet-system/internal/chain/evm"
 	solchain "wallet-system/internal/chain/sol"
+	"wallet-system/internal/clients"
 	"wallet-system/internal/config"
 	"wallet-system/internal/config/env"
 	"wallet-system/internal/helpers"
@@ -54,10 +55,12 @@ func main() {
 	chainProfiles := buildChainProfiles()
 	clients, closeChainClients := buildBroadcasterChainClientRegistry(chainProfiles)
 	defer closeChainClients()
+	withdrawCli := initWithdrawClient()
+	defer withdrawCli.Close()
 
 	go broadcaster.RunConsumer(ctx, withdrawRepo, clients, utxoReserve, consumer)
 	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
-	go broadcaster.RunConfirmer(ctx, withdrawRepo, ledgerRepo, clients, utxoReserve)
+	go broadcaster.RunConfirmer(ctx, withdrawRepo, ledgerRepo, clients, utxoReserve, withdrawCli.Client)
 
 	<-ctx.Done()
 }
@@ -228,4 +231,13 @@ func initKafkaConsumer() *broadcaster.ConsumerRuntime {
 		Topic:  topic,
 		Group:  group,
 	}
+}
+
+func initWithdrawClient() *clients.WithdrawClient {
+	addr := helpers.Getenv("WITHDRAW_GRPC_ADDR", "127.0.0.1:9002")
+	cli, err := clients.NewWithdrawClient(addr)
+	if err != nil {
+		log.Fatalf("init withdraw client failed: %v", err)
+	}
+	return cli
 }

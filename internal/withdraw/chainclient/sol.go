@@ -96,3 +96,16 @@ func (c *solanaClient) BuildUnsignedWithdrawTx(
 	}
 	return c.sol.BuildUnsignedWithdrawTx(ctx, rt.FromAddress, toAddr, amount.Uint64())
 }
+
+func (c *solanaClient) BuildRBFUnsignedWithdrawTx(
+	_ context.Context,
+	_ string,
+	_ string,
+	_ string,
+	_ string,
+	_ string,
+	_ int64,
+	_ int64,
+) (*RBFUnsignedBuildResult, error) {
+	return nil, ErrNotImplemented
+}
