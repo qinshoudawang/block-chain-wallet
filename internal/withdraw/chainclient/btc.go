@@ -49,6 +49,11 @@ type btcRBFFeePlan struct {
 
 const btcChangeDustLimitSat int64 = 546
 
+const (
+	defaultBTCRBFFeeTargetBlocks  int64 = 2
+	defaultBTCRBFMinDeltaSatPerVB int64 = 1
+)
+
 func newBTCClientWithRPC(rpc *btc.Client) Client {
 	return &btcClient{cli: rpc}
 }
@@ -187,8 +192,6 @@ func (c *btcClient) BuildRBFUnsignedWithdrawTx(
 	toAddr string,
 	amount string,
 	signedPayload string,
-	feeTargetBlocks int64,
-	minDeltaSatPerVByte int64,
 ) (*RBFUnsignedBuildResult, error) {
 	if c == nil || c.cli == nil {
 		return nil, errors.New("btc client is required")
@@ -210,7 +213,7 @@ func (c *btcClient) BuildRBFUnsignedWithdrawTx(
 		return nil, err
 	}
 	// 4) 计算提费方案：old/new feeRate、old/new fee、deltaFee。
-	feePlan, err := buildBTCRBFFeePlan(c.cli, tx, totalInput, totalOutput, feeTargetBlocks, minDeltaSatPerVByte)
+	feePlan, err := buildBTCRBFFeePlan(c.cli, tx, totalInput, totalOutput)
 	if err != nil {
 		return nil, err
 	}
@@ -438,32 +441,26 @@ func ensureRBFReplaceableTx(tx *wire.MsgTx) error {
 	return nil
 }
 
-func resolveRBFNewFeeRate(cli *btc.Client, oldFeeRate, feeTargetBlocks, minDeltaSatPerVByte int64) (int64, error) {
+func resolveRBFNewFeeRate(cli *btc.Client, oldFeeRate int64) (int64, error) {
 	netRate := oldFeeRate
 	if cli != nil {
-		rate, err := cli.EstimateSatPerVByte(normalizeBTCFeeTarget(feeTargetBlocks))
+		rate, err := cli.EstimateSatPerVByte(defaultBTCRBFFeeTargetBlocks)
 		if err == nil && rate > 0 {
 			netRate = rate
 		}
 	}
-	if minDeltaSatPerVByte <= 0 {
-		minDeltaSatPerVByte = 1
-	}
-	newFeeRate := helpers.MaxInt64(netRate, oldFeeRate+minDeltaSatPerVByte)
+	newFeeRate := helpers.MaxInt64(netRate, oldFeeRate+defaultBTCRBFMinDeltaSatPerVB)
 	if newFeeRate <= 0 {
 		return 0, errors.New("invalid btc rbf fee rate")
 	}
 	return newFeeRate, nil
 }
 
-func ensureFeeIncrease(newFee, oldFee, minDeltaSatPerVByte, oldVSize int64) int64 {
+func ensureFeeIncrease(newFee, oldFee, oldVSize int64) int64 {
 	if newFee > oldFee {
 		return newFee
 	}
-	if minDeltaSatPerVByte <= 0 {
-		minDeltaSatPerVByte = 1
-	}
-	return oldFee + minDeltaSatPerVByte*oldVSize
+	return oldFee + defaultBTCRBFMinDeltaSatPerVB*oldVSize
 }
 
 func buildBTCRBFFeePlan(
@@ -471,8 +468,6 @@ func buildBTCRBFFeePlan(
 	tx *wire.MsgTx,
 	totalInput int64,
 	totalOutput int64,
-	feeTargetBlocks int64,
-	minDeltaSatPerVByte int64,
 ) (*btcRBFFeePlan, error) {
 	if totalInput < totalOutput {
 		return nil, errors.New("invalid btc tx inputs/outputs")
@@ -486,12 +481,12 @@ func buildBTCRBFFeePlan(
 	if oldFeeRate <= 0 {
 		oldFeeRate = 1
 	}
-	newFeeRate, err := resolveRBFNewFeeRate(cli, oldFeeRate, feeTargetBlocks, minDeltaSatPerVByte)
+	newFeeRate, err := resolveRBFNewFeeRate(cli, oldFeeRate)
 	if err != nil {
 		return nil, err
 	}
 	newFee := newFeeRate * oldVSize
-	newFee = ensureFeeIncrease(newFee, oldFee, minDeltaSatPerVByte, oldVSize)
+	newFee = ensureFeeIncrease(newFee, oldFee, oldVSize)
 	deltaFee := newFee - oldFee
 	if deltaFee <= 0 {
 		return nil, errors.New("invalid btc rbf fee delta")

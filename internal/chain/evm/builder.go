@@ -23,18 +23,10 @@ func (c *Client) BuildUnsignedTx(
 		return nil, ErrClientNotConfigured
 	}
 
-	tipCap, err := c.cli.SuggestGasTipCap(ctx)
+	tipCap, feeCap, err := c.SuggestDynamicFeeCaps(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	head, err := c.cli.HeaderByNumber(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	// 简化策略：baseFee * 2 + tip
-	feeCap := new(big.Int).Mul(head.BaseFee, big.NewInt(2))
-	feeCap.Add(feeCap, tipCap)
 
 	// 估 gas
 	msg := ethereumCallMsg(from, to, value, data, feeCap, tipCap)

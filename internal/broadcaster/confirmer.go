@@ -24,15 +24,13 @@ type confirmThresholds struct {
 }
 
 type Confirmer struct {
-	wr           *repo.WithdrawRepo
-	lr           *repo.LedgerRepo
-	clients      *chainclient.Registry
-	utxoReserve  *utxoreserve.Manager
-	thresholds   confirmThresholds
-	rbfStuckFor  time.Duration
-	withdrawRPC  withdrawpb.WithdrawServiceClient
-	rbfFeeTarget int64
-	rbfMinDelta  int64
+	wr          *repo.WithdrawRepo
+	lr          *repo.LedgerRepo
+	clients     *chainclient.Registry
+	utxoReserve *utxoreserve.Manager
+	thresholds  confirmThresholds
+	rbfStuckFor time.Duration
+	withdrawRPC withdrawpb.WithdrawServiceClient
 }
 
 func NewConfirmer(
@@ -43,15 +41,13 @@ func NewConfirmer(
 	withdrawRPC withdrawpb.WithdrawServiceClient,
 ) *Confirmer {
 	return &Confirmer{
-		wr:           wr,
-		lr:           lr,
-		clients:      clients,
-		utxoReserve:  utxoReserve,
-		thresholds:   loadConfirmThresholds(),
-		rbfStuckFor:  loadBTCRBFStuckThreshold(),
-		withdrawRPC:  withdrawRPC,
-		rbfFeeTarget: normalizeFeeTargetBlocks(helpers.ParseInt64Env("BTC_RBF_FEE_TARGET_BLOCKS", 2)),
-		rbfMinDelta:  normalizeMinRBFDelta(helpers.ParseInt64Env("BTC_RBF_MIN_DELTA_SAT_PER_VBYTE", 1)),
+		wr:          wr,
+		lr:          lr,
+		clients:     clients,
+		utxoReserve: utxoReserve,
+		thresholds:  loadConfirmThresholds(),
+		rbfStuckFor: loadBTCRBFStuckThreshold(),
+		withdrawRPC: withdrawRPC,
 	}
 }
 
@@ -166,11 +162,9 @@ func (c *Confirmer) tryRBF(
 	if c.withdrawRPC == nil {
 		return
 	}
-	resp, err := c.withdrawRPC.SubmitBTCRBF(ctx, &withdrawpb.SubmitBTCRBFRequest{
-		WithdrawId:          o.WithdrawID,
-		OldTxHash:           o.TxHash,
-		FeeTargetBlocks:     c.rbfFeeTarget,
-		MinDeltaSatPerVbyte: c.rbfMinDelta,
+	resp, err := c.withdrawRPC.SubmitRBF(ctx, &withdrawpb.SubmitRBFRequest{
+		WithdrawId: o.WithdrawID,
+		OldTxHash:  o.TxHash,
 	})
 	if err != nil {
 		log.Printf("[confirmer] rbf submit failed withdraw_id=%s tx_hash=%s err=%v", o.WithdrawID, o.TxHash, err)
@@ -227,20 +221,6 @@ func loadBTCRBFStuckThreshold() time.Duration {
 		return 0
 	}
 	return time.Duration(minutes) * time.Minute
-}
-
-func normalizeFeeTargetBlocks(v int64) int64 {
-	if v > 0 {
-		return v
-	}
-	return 2
-}
-
-func normalizeMinRBFDelta(v int64) int64 {
-	if v > 0 {
-		return v
-	}
-	return 1
 }
 
 func (t confirmThresholds) forChain(chain string) int {

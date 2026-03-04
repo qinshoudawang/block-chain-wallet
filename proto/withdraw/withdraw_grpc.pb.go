@@ -19,14 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WithdrawService_SubmitBTCRBF_FullMethodName = "/withdraw.WithdrawService/SubmitBTCRBF"
+	WithdrawService_SubmitRBF_FullMethodName = "/withdraw.WithdrawService/SubmitRBF"
 )
 
 // WithdrawServiceClient is the client API for WithdrawService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WithdrawServiceClient interface {
-	SubmitBTCRBF(ctx context.Context, in *SubmitBTCRBFRequest, opts ...grpc.CallOption) (*SubmitBTCRBFResponse, error)
+	SubmitRBF(ctx context.Context, in *SubmitRBFRequest, opts ...grpc.CallOption) (*SubmitRBFResponse, error)
 }
 
 type withdrawServiceClient struct {
@@ -37,10 +37,10 @@ func NewWithdrawServiceClient(cc grpc.ClientConnInterface) WithdrawServiceClient
 	return &withdrawServiceClient{cc}
 }
 
-func (c *withdrawServiceClient) SubmitBTCRBF(ctx context.Context, in *SubmitBTCRBFRequest, opts ...grpc.CallOption) (*SubmitBTCRBFResponse, error) {
+func (c *withdrawServiceClient) SubmitRBF(ctx context.Context, in *SubmitRBFRequest, opts ...grpc.CallOption) (*SubmitRBFResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SubmitBTCRBFResponse)
-	err := c.cc.Invoke(ctx, WithdrawService_SubmitBTCRBF_FullMethodName, in, out, cOpts...)
+	out := new(SubmitRBFResponse)
+	err := c.cc.Invoke(ctx, WithdrawService_SubmitRBF_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func (c *withdrawServiceClient) SubmitBTCRBF(ctx context.Context, in *SubmitBTCR
 // All implementations must embed UnimplementedWithdrawServiceServer
 // for forward compatibility.
 type WithdrawServiceServer interface {
-	SubmitBTCRBF(context.Context, *SubmitBTCRBFRequest) (*SubmitBTCRBFResponse, error)
+	SubmitRBF(context.Context, *SubmitRBFRequest) (*SubmitRBFResponse, error)
 	mustEmbedUnimplementedWithdrawServiceServer()
 }
 
@@ -62,8 +62,8 @@ type WithdrawServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedWithdrawServiceServer struct{}
 
-func (UnimplementedWithdrawServiceServer) SubmitBTCRBF(context.Context, *SubmitBTCRBFRequest) (*SubmitBTCRBFResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SubmitBTCRBF not implemented")
+func (UnimplementedWithdrawServiceServer) SubmitRBF(context.Context, *SubmitRBFRequest) (*SubmitRBFResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitRBF not implemented")
 }
 func (UnimplementedWithdrawServiceServer) mustEmbedUnimplementedWithdrawServiceServer() {}
 func (UnimplementedWithdrawServiceServer) testEmbeddedByValue()                         {}
@@ -86,20 +86,20 @@ func RegisterWithdrawServiceServer(s grpc.ServiceRegistrar, srv WithdrawServiceS
 	s.RegisterService(&WithdrawService_ServiceDesc, srv)
 }
 
-func _WithdrawService_SubmitBTCRBF_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SubmitBTCRBFRequest)
+func _WithdrawService_SubmitRBF_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitRBFRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(WithdrawServiceServer).SubmitBTCRBF(ctx, in)
+		return srv.(WithdrawServiceServer).SubmitRBF(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: WithdrawService_SubmitBTCRBF_FullMethodName,
+		FullMethod: WithdrawService_SubmitRBF_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(WithdrawServiceServer).SubmitBTCRBF(ctx, req.(*SubmitBTCRBFRequest))
+		return srv.(WithdrawServiceServer).SubmitRBF(ctx, req.(*SubmitRBFRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -112,8 +112,8 @@ var WithdrawService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*WithdrawServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "SubmitBTCRBF",
-			Handler:    _WithdrawService_SubmitBTCRBF_Handler,
+			MethodName: "SubmitRBF",
+			Handler:    _WithdrawService_SubmitRBF_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

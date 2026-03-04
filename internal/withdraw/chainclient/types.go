@@ -51,7 +51,5 @@ type Client interface {
 		toAddr string,
 		amount string,
 		signedPayload string,
-		feeTargetBlocks int64,
-		minDeltaSatPerVByte int64,
 	) (*RBFUnsignedBuildResult, error)
 }

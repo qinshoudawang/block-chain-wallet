@@ -21,30 +21,28 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type SubmitBTCRBFRequest struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	WithdrawId          string                 `protobuf:"bytes,1,opt,name=withdraw_id,json=withdrawId,proto3" json:"withdraw_id,omitempty"`
-	OldTxHash           string                 `protobuf:"bytes,2,opt,name=old_tx_hash,json=oldTxHash,proto3" json:"old_tx_hash,omitempty"`
-	FeeTargetBlocks     int64                  `protobuf:"varint,3,opt,name=fee_target_blocks,json=feeTargetBlocks,proto3" json:"fee_target_blocks,omitempty"`
-	MinDeltaSatPerVbyte int64                  `protobuf:"varint,4,opt,name=min_delta_sat_per_vbyte,json=minDeltaSatPerVbyte,proto3" json:"min_delta_sat_per_vbyte,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+type SubmitRBFRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WithdrawId    string                 `protobuf:"bytes,1,opt,name=withdraw_id,json=withdrawId,proto3" json:"withdraw_id,omitempty"`
+	OldTxHash     string                 `protobuf:"bytes,2,opt,name=old_tx_hash,json=oldTxHash,proto3" json:"old_tx_hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SubmitBTCRBFRequest) Reset() {
-	*x = SubmitBTCRBFRequest{}
+func (x *SubmitRBFRequest) Reset() {
+	*x = SubmitRBFRequest{}
 	mi := &file_proto_withdraw_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SubmitBTCRBFRequest) String() string {
+func (x *SubmitRBFRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SubmitBTCRBFRequest) ProtoMessage() {}
+func (*SubmitRBFRequest) ProtoMessage() {}
 
-func (x *SubmitBTCRBFRequest) ProtoReflect() protoreflect.Message {
+func (x *SubmitRBFRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_withdraw_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -56,40 +54,26 @@ func (x *SubmitBTCRBFRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SubmitBTCRBFRequest.ProtoReflect.Descriptor instead.
-func (*SubmitBTCRBFRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use SubmitRBFRequest.ProtoReflect.Descriptor instead.
+func (*SubmitRBFRequest) Descriptor() ([]byte, []int) {
 	return file_proto_withdraw_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *SubmitBTCRBFRequest) GetWithdrawId() string {
+func (x *SubmitRBFRequest) GetWithdrawId() string {
 	if x != nil {
 		return x.WithdrawId
 	}
 	return ""
 }
 
-func (x *SubmitBTCRBFRequest) GetOldTxHash() string {
+func (x *SubmitRBFRequest) GetOldTxHash() string {
 	if x != nil {
 		return x.OldTxHash
 	}
 	return ""
 }
 
-func (x *SubmitBTCRBFRequest) GetFeeTargetBlocks() int64 {
-	if x != nil {
-		return x.FeeTargetBlocks
-	}
-	return 0
-}
-
-func (x *SubmitBTCRBFRequest) GetMinDeltaSatPerVbyte() int64 {
-	if x != nil {
-		return x.MinDeltaSatPerVbyte
-	}
-	return 0
-}
-
-type SubmitBTCRBFResponse struct {
+type SubmitRBFResponse struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	WithdrawId            string                 `protobuf:"bytes,1,opt,name=withdraw_id,json=withdrawId,proto3" json:"withdraw_id,omitempty"`
 	RequestId             string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
@@ -102,20 +86,20 @@ type SubmitBTCRBFResponse struct {
 	sizeCache             protoimpl.SizeCache
 }
 
-func (x *SubmitBTCRBFResponse) Reset() {
-	*x = SubmitBTCRBFResponse{}
+func (x *SubmitRBFResponse) Reset() {
+	*x = SubmitRBFResponse{}
 	mi := &file_proto_withdraw_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SubmitBTCRBFResponse) String() string {
+func (x *SubmitRBFResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SubmitBTCRBFResponse) ProtoMessage() {}
+func (*SubmitRBFResponse) ProtoMessage() {}
 
-func (x *SubmitBTCRBFResponse) ProtoReflect() protoreflect.Message {
+func (x *SubmitRBFResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_withdraw_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -127,54 +111,54 @@ func (x *SubmitBTCRBFResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SubmitBTCRBFResponse.ProtoReflect.Descriptor instead.
-func (*SubmitBTCRBFResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use SubmitRBFResponse.ProtoReflect.Descriptor instead.
+func (*SubmitRBFResponse) Descriptor() ([]byte, []int) {
 	return file_proto_withdraw_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *SubmitBTCRBFResponse) GetWithdrawId() string {
+func (x *SubmitRBFResponse) GetWithdrawId() string {
 	if x != nil {
 		return x.WithdrawId
 	}
 	return ""
 }
 
-func (x *SubmitBTCRBFResponse) GetRequestId() string {
+func (x *SubmitRBFResponse) GetRequestId() string {
 	if x != nil {
 		return x.RequestId
 	}
 	return ""
 }
 
-func (x *SubmitBTCRBFResponse) GetStatus() string {
+func (x *SubmitRBFResponse) GetStatus() string {
 	if x != nil {
 		return x.Status
 	}
 	return ""
 }
 
-func (x *SubmitBTCRBFResponse) GetOldFeeRateSatPerVbyte() int64 {
+func (x *SubmitRBFResponse) GetOldFeeRateSatPerVbyte() int64 {
 	if x != nil {
 		return x.OldFeeRateSatPerVbyte
 	}
 	return 0
 }
 
-func (x *SubmitBTCRBFResponse) GetNewFeeRateSatPerVbyte() int64 {
+func (x *SubmitRBFResponse) GetNewFeeRateSatPerVbyte() int64 {
 	if x != nil {
 		return x.NewFeeRateSatPerVbyte
 	}
 	return 0
 }
 
-func (x *SubmitBTCRBFResponse) GetOldFeeSat() int64 {
+func (x *SubmitRBFResponse) GetOldFeeSat() int64 {
 	if x != nil {
 		return x.OldFeeSat
 	}
 	return 0
 }
 
-func (x *SubmitBTCRBFResponse) GetNewFeeSat() int64 {
+func (x *SubmitRBFResponse) GetNewFeeSat() int64 {
 	if x != nil {
 		return x.NewFeeSat
 	}
@@ -185,14 +169,12 @@ var File_proto_withdraw_proto protoreflect.FileDescriptor
 
 const file_proto_withdraw_proto_rawDesc = "" +
 	"\n" +
-	"\x14proto/withdraw.proto\x12\bwithdraw\"\xb8\x01\n" +
-	"\x13SubmitBTCRBFRequest\x12\x1f\n" +
+	"\x14proto/withdraw.proto\x12\bwithdraw\"S\n" +
+	"\x10SubmitRBFRequest\x12\x1f\n" +
 	"\vwithdraw_id\x18\x01 \x01(\tR\n" +
 	"withdrawId\x12\x1e\n" +
-	"\vold_tx_hash\x18\x02 \x01(\tR\toldTxHash\x12*\n" +
-	"\x11fee_target_blocks\x18\x03 \x01(\x03R\x0ffeeTargetBlocks\x124\n" +
-	"\x17min_delta_sat_per_vbyte\x18\x04 \x01(\x03R\x13minDeltaSatPerVbyte\"\xa4\x02\n" +
-	"\x14SubmitBTCRBFResponse\x12\x1f\n" +
+	"\vold_tx_hash\x18\x02 \x01(\tR\toldTxHash\"\xa1\x02\n" +
+	"\x11SubmitRBFResponse\x12\x1f\n" +
 	"\vwithdraw_id\x18\x01 \x01(\tR\n" +
 	"withdrawId\x12\x1d\n" +
 	"\n" +
@@ -201,9 +183,9 @@ const file_proto_withdraw_proto_rawDesc = "" +
 	"\x1aold_fee_rate_sat_per_vbyte\x18\x04 \x01(\x03R\x15oldFeeRateSatPerVbyte\x129\n" +
 	"\x1anew_fee_rate_sat_per_vbyte\x18\x05 \x01(\x03R\x15newFeeRateSatPerVbyte\x12\x1e\n" +
 	"\vold_fee_sat\x18\x06 \x01(\x03R\toldFeeSat\x12\x1e\n" +
-	"\vnew_fee_sat\x18\a \x01(\x03R\tnewFeeSat2`\n" +
-	"\x0fWithdrawService\x12M\n" +
-	"\fSubmitBTCRBF\x12\x1d.withdraw.SubmitBTCRBFRequest\x1a\x1e.withdraw.SubmitBTCRBFResponseB\x19Z\x17proto/withdraw;withdrawb\x06proto3"
+	"\vnew_fee_sat\x18\a \x01(\x03R\tnewFeeSat2W\n" +
+	"\x0fWithdrawService\x12D\n" +
+	"\tSubmitRBF\x12\x1a.withdraw.SubmitRBFRequest\x1a\x1b.withdraw.SubmitRBFResponseB\x19Z\x17proto/withdraw;withdrawb\x06proto3"
 
 var (
 	file_proto_withdraw_proto_rawDescOnce sync.Once
@@ -219,12 +201,12 @@ func file_proto_withdraw_proto_rawDescGZIP() []byte {
 
 var file_proto_withdraw_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_proto_withdraw_proto_goTypes = []any{
-	(*SubmitBTCRBFRequest)(nil),  // 0: withdraw.SubmitBTCRBFRequest
-	(*SubmitBTCRBFResponse)(nil), // 1: withdraw.SubmitBTCRBFResponse
+	(*SubmitRBFRequest)(nil),  // 0: withdraw.SubmitRBFRequest
+	(*SubmitRBFResponse)(nil), // 1: withdraw.SubmitRBFResponse
 }
 var file_proto_withdraw_proto_depIdxs = []int32{
-	0, // 0: withdraw.WithdrawService.SubmitBTCRBF:input_type -> withdraw.SubmitBTCRBFRequest
-	1, // 1: withdraw.WithdrawService.SubmitBTCRBF:output_type -> withdraw.SubmitBTCRBFResponse
+	0, // 0: withdraw.WithdrawService.SubmitRBF:input_type -> withdraw.SubmitRBFRequest
+	1, // 1: withdraw.WithdrawService.SubmitRBF:output_type -> withdraw.SubmitRBFResponse
 	1, // [1:2] is the sub-list for method output_type
 	0, // [0:1] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name

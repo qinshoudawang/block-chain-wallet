@@ -30,7 +30,7 @@ type RBFServer struct {
 	authSecret    []byte
 }
 
-type btcRBFOrderContext struct {
+type rbfOrderContext struct {
 	WithdrawID string
 	OldTxHash  string
 	Order      *model.WithdrawOrder
@@ -52,11 +52,11 @@ func NewRBFServer(
 	}
 }
 
-func (s *RBFServer) SubmitBTCRBF(ctx context.Context, req *withdrawpb.SubmitBTCRBFRequest) (*withdrawpb.SubmitBTCRBFResponse, error) {
+func (s *RBFServer) SubmitRBF(ctx context.Context, req *withdrawpb.SubmitRBFRequest) (*withdrawpb.SubmitRBFResponse, error) {
 	if err := s.validateRBFServerConfig(); err != nil {
 		return nil, err
 	}
-	rbfCtx, err := s.loadAndValidateBTCRBFOrder(ctx, req)
+	rbfCtx, err := s.loadAndValidateRBFOrder(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +66,6 @@ func (s *RBFServer) SubmitBTCRBF(ctx context.Context, req *withdrawpb.SubmitBTCR
 	if err != nil {
 		return nil, err
 	}
-	feeTarget := normalizeBTCFeeTarget(req.GetFeeTargetBlocks())
-	minDelta := normalizeMinRBFDelta(req.GetMinDeltaSatPerVbyte())
 	build, err := chainCli.BuildRBFUnsignedWithdrawTx(
 		ctx,
 		order.Chain,
@@ -75,8 +73,6 @@ func (s *RBFServer) SubmitBTCRBF(ctx context.Context, req *withdrawpb.SubmitBTCR
 		order.ToAddr,
 		order.Amount,
 		order.SignedPayload,
-		feeTarget,
-		minDelta,
 	)
 	if err != nil {
 		return nil, err
@@ -140,7 +136,7 @@ func (s *RBFServer) SubmitBTCRBF(ctx context.Context, req *withdrawpb.SubmitBTCR
 		return nil, err
 	}
 
-	return &withdrawpb.SubmitBTCRBFResponse{
+	return &withdrawpb.SubmitRBFResponse{
 		WithdrawId:            order.WithdrawID,
 		RequestId:             requestID,
 		Status:                "RBF_ENQUEUED",
@@ -158,7 +154,7 @@ func (s *RBFServer) validateRBFServerConfig() error {
 	return nil
 }
 
-func (s *RBFServer) loadAndValidateBTCRBFOrder(ctx context.Context, req *withdrawpb.SubmitBTCRBFRequest) (*btcRBFOrderContext, error) {
+func (s *RBFServer) loadAndValidateRBFOrder(ctx context.Context, req *withdrawpb.SubmitRBFRequest) (*rbfOrderContext, error) {
 	withdrawID := strings.TrimSpace(req.GetWithdrawId())
 	oldTxHash := strings.TrimSpace(req.GetOldTxHash())
 	if withdrawID == "" || oldTxHash == "" {
@@ -179,32 +175,20 @@ func (s *RBFServer) loadAndValidateBTCRBFOrder(ctx context.Context, req *withdra
 	if err != nil {
 		return nil, err
 	}
-	if spec.Family != helpers.FamilyBTC {
-		return nil, errors.New("only btc rbf is supported")
+	switch spec.Family {
+	case helpers.FamilyBTC, helpers.FamilyEVM:
+	default:
+		return nil, errors.New("rbf is not supported for this chain family")
 	}
 	if strings.TrimSpace(order.SignedPayload) == "" {
 		return nil, errors.New("signed payload is empty")
 	}
 	if v := strings.TrimSpace(order.SignedPayloadEncoding); v != "" && !strings.EqualFold(v, broadcaster.SignedPayloadEncodingHex) {
-		return nil, errors.New("btc signed payload encoding must be hex")
+		return nil, errors.New("rbf signed payload encoding must be hex")
 	}
-	return &btcRBFOrderContext{
+	return &rbfOrderContext{
 		WithdrawID: withdrawID,
 		OldTxHash:  oldTxHash,
 		Order:      order,
 	}, nil
-}
-
-func normalizeBTCFeeTarget(v int64) int64 {
-	if v > 0 {
-		return v
-	}
-	return 2
-}
-
-func normalizeMinRBFDelta(v int64) int64 {
-	if v > 0 {
-		return v
-	}
-	return 1
 }

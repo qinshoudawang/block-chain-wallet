@@ -5,17 +5,15 @@ package withdraw;
 option go_package = "proto/withdraw;withdraw";
 
 service WithdrawService {
-  rpc SubmitBTCRBF(SubmitBTCRBFRequest) returns (SubmitBTCRBFResponse);
+  rpc SubmitRBF(SubmitRBFRequest) returns (SubmitRBFResponse);
 }
 
-message SubmitBTCRBFRequest {
+message SubmitRBFRequest {
   string withdraw_id = 1;
   string old_tx_hash = 2;
-  int64 fee_target_blocks = 3;
-  int64 min_delta_sat_per_vbyte = 4;
 }
 
-message SubmitBTCRBFResponse {
+message SubmitRBFResponse {
   string withdraw_id = 1;
   string request_id = 2;
   string status = 3;

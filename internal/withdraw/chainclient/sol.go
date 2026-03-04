@@ -104,8 +104,6 @@ func (c *solanaClient) BuildRBFUnsignedWithdrawTx(
 	_ string,
 	_ string,
 	_ string,
-	_ int64,
-	_ int64,
 ) (*RBFUnsignedBuildResult, error) {
 	return nil, ErrNotImplemented
 }
