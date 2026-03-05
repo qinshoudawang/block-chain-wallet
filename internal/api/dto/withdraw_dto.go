@@ -10,6 +10,7 @@ type WithdrawRequest struct {
 	Chain  string `json:"chain" binding:"required"`
 	To     string `json:"to" binding:"required"`
 	Amount string `json:"amount" binding:"required"` // atomic-unit decimal
+	Token  string `json:"token"`                     // optional token contract address (EVM)
 }
 
 type WithdrawResponse struct {

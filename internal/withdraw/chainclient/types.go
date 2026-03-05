@@ -21,6 +21,7 @@ type Runtime struct {
 	Chain            string
 	ChainID          *big.Int
 	FromAddress      string
+	TokenContract    string
 	WithdrawID       string
 	MinConf          int
 	FeeTarget        int64

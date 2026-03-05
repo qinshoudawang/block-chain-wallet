@@ -128,7 +128,7 @@ func (s *RBFServer) SubmitRBF(ctx context.Context, req *withdrawpb.SubmitRBFRequ
 		Sequence:              order.Sequence,
 		SignedPayload:         newSignedPayload,
 		SignedPayloadEncoding: encoding,
-		ChainMetaJSON:         order.ChainMetaJSON,
+		TokenContractAddress:  order.TokenContractAddress,
 		CreatedAt:             time.Now().Unix(),
 		Attempt:               0,
 	}
@@ -187,6 +187,9 @@ func (s *RBFServer) loadAndValidateRBFOrder(ctx context.Context, req *withdrawpb
 	}
 	if strings.TrimSpace(order.SignedPayload) == "" {
 		return nil, errors.New("signed payload is empty")
+	}
+	if strings.TrimSpace(order.TokenContractAddress) != "" {
+		return nil, errors.New("rbf is not supported for token withdraw yet")
 	}
 	expectedEncoding, err := expectedSignedPayloadEncodingForFamily(spec.Family)
 	if err != nil {

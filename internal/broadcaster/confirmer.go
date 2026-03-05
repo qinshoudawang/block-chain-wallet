@@ -110,7 +110,7 @@ func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]u
 		latestByChain[chain] = latest
 	}
 
-	cf, err := cli.GetConfirmation(ctx, o.TxHash, o.Amount, latest)
+	cf, err := cli.GetConfirmation(ctx, o.TxHash, o.Amount, o.TokenContractAddress, latest)
 	if err != nil {
 		log.Printf("[confirmer] get confirmation failed withdraw_id=%s tx_hash=%s chain=%s err=%v", o.WithdrawID, o.TxHash, chain, err)
 		return
@@ -174,6 +174,10 @@ func (c *Confirmer) tryRBF(
 }
 
 func (c *Confirmer) confirmFinal(ctx context.Context, chain string, o model.WithdrawOrder, cf *chainclient.Confirmation, threshold int) {
+	if cf == nil || cf.Settlement == nil {
+		log.Printf("[confirmer] missing settlement withdraw_id=%s tx_hash=%s chain=%s", o.WithdrawID, o.TxHash, chain)
+		return
+	}
 	ok, err := c.wr.ConfirmWithSettlement(
 		ctx,
 		c.lr,
@@ -181,8 +185,10 @@ func (c *Confirmer) confirmFinal(ctx context.Context, chain string, o model.With
 		cf.BlockNumber,
 		cf.Confirmations,
 		threshold,
+		cf.Settlement.TransferAssetContractAddress,
+		cf.Settlement.TransferSpentAmount,
+		cf.Settlement.NetworkFeeAssetContractAddress,
 		cf.Settlement.NetworkFeeAmount,
-		cf.Settlement.ActualSpentAmount,
 	)
 	if err != nil || !ok {
 		log.Printf(

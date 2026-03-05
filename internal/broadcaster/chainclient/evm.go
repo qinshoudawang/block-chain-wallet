@@ -39,7 +39,7 @@ func (c *evmClient) GetLatestHeight(ctx context.Context) (uint64, error) {
 	return c.client.LatestHeight(ctx)
 }
 
-func (c *evmClient) GetConfirmation(ctx context.Context, txHash string, amount string, latestHeight uint64) (*Confirmation, error) {
+func (c *evmClient) GetConfirmation(ctx context.Context, txHash string, amount string, tokenContractAddress string, latestHeight uint64) (*Confirmation, error) {
 	if c == nil || c.client == nil {
 		return nil, errors.New("evm client is required")
 	}
@@ -51,7 +51,7 @@ func (c *evmClient) GetConfirmation(ctx context.Context, txHash string, amount s
 
 	bn := receipt.BlockNumber.Uint64()
 	conf := int(latestHeight - bn + 1)
-	settlement, err := calcSettlementWei(amount, receipt)
+	settlement, err := calcSettlementWei(amount, tokenContractAddress, receipt)
 	if err != nil {
 		return nil, err
 	}
@@ -60,31 +60,40 @@ func (c *evmClient) GetConfirmation(ctx context.Context, txHash string, amount s
 		BlockNumber:   bn,
 		Confirmations: conf,
 		Settlement: &Settlement{
-			NetworkFeeAmount:  settlement.NetworkFeeAmount,
-			ActualSpentAmount: settlement.ActualSpentAmount,
+			TransferAssetContractAddress:   settlement.TransferAssetContractAddress,
+			TransferSpentAmount:            settlement.TransferSpentAmount,
+			NetworkFeeAssetContractAddress: settlement.NetworkFeeAssetContractAddress,
+			NetworkFeeAmount:               settlement.NetworkFeeAmount,
 		},
 	}, nil
 }
 
 type evmSettlement struct {
-	NetworkFeeAmount  *big.Int
-	ActualSpentAmount *big.Int
+	TransferAssetContractAddress   string
+	TransferSpentAmount            *big.Int
+	NetworkFeeAssetContractAddress string
+	NetworkFeeAmount               *big.Int
 }
 
-func calcSettlementWei(amountWei string, receipt *ethtypes.Receipt) (*evmSettlement, error) {
+func calcSettlementWei(amountWei string, tokenContractAddress string, receipt *ethtypes.Receipt) (*evmSettlement, error) {
 	amount := new(big.Int)
 	if _, ok := amount.SetString(amountWei, 10); !ok || amount.Sign() < 0 {
 		return nil, errInvalidAmountWei
+	}
+	tokenContractAddress = strings.TrimSpace(tokenContractAddress)
+	if tokenContractAddress != "" && !common.IsHexAddress(tokenContractAddress) {
+		return nil, errors.New("invalid evm token contract address")
 	}
 	gasPriceWei := receipt.EffectiveGasPrice
 	if gasPriceWei == nil {
 		gasPriceWei = big.NewInt(0)
 	}
 	gasFeeWei := new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), gasPriceWei)
-	actualSpentWei := new(big.Int).Add(amount, gasFeeWei)
 	return &evmSettlement{
-		NetworkFeeAmount:  gasFeeWei,
-		ActualSpentAmount: actualSpentWei,
+		TransferAssetContractAddress:   tokenContractAddress,
+		TransferSpentAmount:            amount,
+		NetworkFeeAssetContractAddress: "",
+		NetworkFeeAmount:               gasFeeWei,
 	}, nil
 }
 

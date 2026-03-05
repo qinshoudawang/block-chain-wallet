@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"wallet-system/internal/storage/model"
@@ -29,23 +30,31 @@ func NewLedgerRepo(db *gorm.DB) *LedgerRepo {
 	return &LedgerRepo{db: db}
 }
 
-// FreezeWithdraw moves available -> frozen for a withdrawal request, keyed by withdrawID for idempotency.
-func (r *LedgerRepo) FreezeWithdraw(ctx context.Context, chain, address, withdrawID string, amount *big.Int) (string, error) {
+// FreezeWithdraw moves available -> frozen for a withdrawal request and asset, keyed by withdrawID for idempotency.
+func (r *LedgerRepo) FreezeWithdraw(
+	ctx context.Context,
+	chain string,
+	address string,
+	assetContractAddress string,
+	withdrawID string,
+	amount *big.Int,
+) (string, error) {
 	if r == nil || r.db == nil {
 		return "", errors.New("ledger repo not configured")
 	}
 	if amount == nil || amount.Sign() <= 0 {
 		return "", errors.New("invalid freeze amount")
 	}
+	assetContractAddress = normalizeAssetContractAddress(assetContractAddress)
 
 	var freezeID string
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var existing model.LedgerFreeze
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("biz_type = ? AND biz_id = ?", ledgerBizTypeWithdraw, withdrawID).
+			Where("biz_type = ? AND biz_id = ? AND asset_contract_address = ?", ledgerBizTypeWithdraw, withdrawID, assetContractAddress).
 			First(&existing).Error
 		if err == nil {
-			if existing.Chain != chain || existing.Address != address || existing.Amount != amount.String() {
+			if existing.Chain != chain || existing.Address != address || existing.Amount != amount.String() || existing.AssetContractAddress != assetContractAddress {
 				return fmt.Errorf("ledger freeze biz conflict: withdraw_id=%s", withdrawID)
 			}
 			if existing.Status != model.LedgerFreezeFrozen {
@@ -60,7 +69,7 @@ func (r *LedgerRepo) FreezeWithdraw(ctx context.Context, chain, address, withdra
 
 		var acct model.LedgerAccount
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("chain = ? AND address = ?", chain, address).
+			Where("chain = ? AND address = ? AND asset_contract_address = ?", chain, address, assetContractAddress).
 			First(&acct).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrLedgerAccountAbsent
@@ -93,13 +102,14 @@ func (r *LedgerRepo) FreezeWithdraw(ctx context.Context, chain, address, withdra
 
 		freezeID = uuid.NewString()
 		fz := model.LedgerFreeze{
-			FreezeID: freezeID,
-			BizType:  ledgerBizTypeWithdraw,
-			BizID:    withdrawID,
-			Chain:    chain,
-			Address:  address,
-			Amount:   amount.String(),
-			Status:   model.LedgerFreezeFrozen,
+			FreezeID:             freezeID,
+			BizType:              ledgerBizTypeWithdraw,
+			BizID:                withdrawID,
+			Chain:                chain,
+			Address:              address,
+			AssetContractAddress: assetContractAddress,
+			Amount:               amount.String(),
+			Status:               model.LedgerFreezeFrozen,
 		}
 		return tx.Create(&fz).Error
 	})
@@ -116,64 +126,69 @@ func (r *LedgerRepo) ReleaseWithdrawFreeze(ctx context.Context, withdrawID strin
 	}
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var fz model.LedgerFreeze
+		var freezes []model.LedgerFreeze
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("biz_type = ? AND biz_id = ?", ledgerBizTypeWithdraw, withdrawID).
-			First(&fz).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil
-			}
+			Find(&freezes).Error; err != nil {
 			return err
 		}
-		if fz.Status == model.LedgerFreezeReleased {
+		if len(freezes) == 0 {
 			return nil
 		}
-		if fz.Status != model.LedgerFreezeFrozen {
-			return fmt.Errorf("freeze not releasable: %s", fz.Status)
-		}
-
-		var acct model.LedgerAccount
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("chain = ? AND address = ?", fz.Chain, fz.Address).
-			First(&acct).Error; err != nil {
-			return err
-		}
-
-		amt, err := parseAmount(fz.Amount)
-		if err != nil {
-			return fmt.Errorf("parse freeze amount: %w", err)
-		}
-		avail, err := parseAmount(acct.AvailableAmount)
-		if err != nil {
-			return fmt.Errorf("parse ledger available: %w", err)
-		}
-		frozen, err := parseAmount(acct.FrozenAmount)
-		if err != nil {
-			return fmt.Errorf("parse ledger frozen: %w", err)
-		}
-		if frozen.Cmp(amt) < 0 {
-			return errors.New("ledger frozen amount underflow")
-		}
-
-		frozen.Sub(frozen, amt)
-		avail.Add(avail, amt)
-		if err := tx.Model(&model.LedgerAccount{}).
-			Where("id = ?", acct.ID).
-			Updates(map[string]any{
-				"available_amount": avail.String(),
-				"frozen_amount":    frozen.String(),
-			}).Error; err != nil {
-			return err
-		}
-
 		now := time.Now()
-		return tx.Model(&model.LedgerFreeze{}).
-			Where("id = ?", fz.ID).
-			Updates(map[string]any{
-				"status":      model.LedgerFreezeReleased,
-				"released_at": &now,
-				"updated_at":  now,
-			}).Error
+		for _, fz := range freezes {
+			if fz.Status == model.LedgerFreezeReleased {
+				continue
+			}
+			if fz.Status != model.LedgerFreezeFrozen {
+				return fmt.Errorf("freeze not releasable: %s", fz.Status)
+			}
+
+			var acct model.LedgerAccount
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("chain = ? AND address = ? AND asset_contract_address = ?", fz.Chain, fz.Address, fz.AssetContractAddress).
+				First(&acct).Error; err != nil {
+				return err
+			}
+
+			amt, err := parseAmount(fz.Amount)
+			if err != nil {
+				return fmt.Errorf("parse freeze amount: %w", err)
+			}
+			avail, err := parseAmount(acct.AvailableAmount)
+			if err != nil {
+				return fmt.Errorf("parse ledger available: %w", err)
+			}
+			frozen, err := parseAmount(acct.FrozenAmount)
+			if err != nil {
+				return fmt.Errorf("parse ledger frozen: %w", err)
+			}
+			if frozen.Cmp(amt) < 0 {
+				return errors.New("ledger frozen amount underflow")
+			}
+
+			frozen.Sub(frozen, amt)
+			avail.Add(avail, amt)
+			if err := tx.Model(&model.LedgerAccount{}).
+				Where("id = ?", acct.ID).
+				Updates(map[string]any{
+					"available_amount": avail.String(),
+					"frozen_amount":    frozen.String(),
+				}).Error; err != nil {
+				return err
+			}
+
+			if err := tx.Model(&model.LedgerFreeze{}).
+				Where("id = ?", fz.ID).
+				Updates(map[string]any{
+					"status":      model.LedgerFreezeReleased,
+					"released_at": &now,
+					"updated_at":  now,
+				}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -184,84 +199,97 @@ func (r *LedgerRepo) ConsumeWithdrawFreeze(ctx context.Context, withdrawID strin
 	}
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var fz model.LedgerFreeze
+		var freezes []model.LedgerFreeze
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("biz_type = ? AND biz_id = ?", ledgerBizTypeWithdraw, withdrawID).
-			First(&fz).Error; err != nil {
+			Find(&freezes).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil
 			}
 			return err
 		}
-		if fz.Status == model.LedgerFreezeConsumed {
+		if len(freezes) == 0 {
 			return nil
 		}
-		if fz.Status != model.LedgerFreezeFrozen {
-			return fmt.Errorf("freeze not consumable: %s", fz.Status)
-		}
-
-		var acct model.LedgerAccount
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("chain = ? AND address = ?", fz.Chain, fz.Address).
-			First(&acct).Error; err != nil {
-			return err
-		}
-
-		amt, err := parseAmount(fz.Amount)
-		if err != nil {
-			return fmt.Errorf("parse freeze amount: %w", err)
-		}
-		frozen, err := parseAmount(acct.FrozenAmount)
-		if err != nil {
-			return fmt.Errorf("parse ledger frozen: %w", err)
-		}
-		if frozen.Cmp(amt) < 0 {
-			return errors.New("ledger frozen amount underflow")
-		}
-
-		frozen.Sub(frozen, amt)
-		if err := tx.Model(&model.LedgerAccount{}).
-			Where("id = ?", acct.ID).
-			Updates(map[string]any{
-				"frozen_amount": frozen.String(),
-			}).Error; err != nil {
-			return err
-		}
-
 		now := time.Now()
-		return tx.Model(&model.LedgerFreeze{}).
-			Where("id = ?", fz.ID).
-			Updates(map[string]any{
-				"status":      model.LedgerFreezeConsumed,
-				"consumed_at": &now,
-				"updated_at":  now,
-			}).Error
+		for _, fz := range freezes {
+			if fz.Status == model.LedgerFreezeConsumed {
+				continue
+			}
+			if fz.Status != model.LedgerFreezeFrozen {
+				return fmt.Errorf("freeze not consumable: %s", fz.Status)
+			}
+
+			var acct model.LedgerAccount
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("chain = ? AND address = ? AND asset_contract_address = ?", fz.Chain, fz.Address, fz.AssetContractAddress).
+				First(&acct).Error; err != nil {
+				return err
+			}
+
+			amt, err := parseAmount(fz.Amount)
+			if err != nil {
+				return fmt.Errorf("parse freeze amount: %w", err)
+			}
+			frozen, err := parseAmount(acct.FrozenAmount)
+			if err != nil {
+				return fmt.Errorf("parse ledger frozen: %w", err)
+			}
+			if frozen.Cmp(amt) < 0 {
+				return errors.New("ledger frozen amount underflow")
+			}
+
+			frozen.Sub(frozen, amt)
+			if err := tx.Model(&model.LedgerAccount{}).
+				Where("id = ?", acct.ID).
+				Updates(map[string]any{
+					"frozen_amount": frozen.String(),
+				}).Error; err != nil {
+				return err
+			}
+
+			if err := tx.Model(&model.LedgerFreeze{}).
+				Where("id = ?", fz.ID).
+				Updates(map[string]any{
+					"status":      model.LedgerFreezeConsumed,
+					"consumed_at": &now,
+					"updated_at":  now,
+				}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
 // SettleWithdrawFreeze finalizes a withdrawal using actual spent amount.
 // It consumes the whole reserved freeze and refunds/deducts the delta to available.
-func (r *LedgerRepo) SettleWithdrawFreeze(ctx context.Context, withdrawID string, actualSpent *big.Int) error {
+func (r *LedgerRepo) SettleWithdrawFreeze(ctx context.Context, withdrawID string, assetContractAddress string, actualSpent *big.Int) error {
 	if r == nil || r.db == nil {
 		return errors.New("ledger repo not configured")
 	}
 	if actualSpent == nil || actualSpent.Sign() < 0 {
 		return errors.New("invalid actual spent amount")
 	}
+	assetContractAddress = normalizeAssetContractAddress(assetContractAddress)
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return r.settleWithdrawFreezeWithDB(tx, withdrawID, actualSpent)
+		return r.settleWithdrawFreezeWithDB(tx, withdrawID, assetContractAddress, actualSpent)
 	})
 }
 
-func (r *LedgerRepo) settleWithdrawFreezeWithDB(db *gorm.DB, withdrawID string, actualSpent *big.Int) error {
+func (r *LedgerRepo) settleWithdrawFreezeWithDB(db *gorm.DB, withdrawID string, assetContractAddress string, actualSpent *big.Int) error {
+	assetContractAddress = normalizeAssetContractAddress(assetContractAddress)
+	if actualSpent == nil {
+		actualSpent = big.NewInt(0)
+	}
 	if actualSpent == nil || actualSpent.Sign() < 0 {
 		return errors.New("invalid actual spent amount")
 	}
 	tx := db
 	var fz model.LedgerFreeze
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("biz_type = ? AND biz_id = ?", ledgerBizTypeWithdraw, withdrawID).
+		Where("biz_type = ? AND biz_id = ? AND asset_contract_address = ?", ledgerBizTypeWithdraw, withdrawID, assetContractAddress).
 		First(&fz).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
@@ -277,7 +305,7 @@ func (r *LedgerRepo) settleWithdrawFreezeWithDB(db *gorm.DB, withdrawID string, 
 
 	var acct model.LedgerAccount
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("chain = ? AND address = ?", fz.Chain, fz.Address).
+		Where("chain = ? AND address = ? AND asset_contract_address = ?", fz.Chain, fz.Address, fz.AssetContractAddress).
 		First(&acct).Error; err != nil {
 		return err
 	}
@@ -338,4 +366,8 @@ func parseAmount(v string) (*big.Int, error) {
 		return nil, fmt.Errorf("invalid amount: %q", v)
 	}
 	return n, nil
+}
+
+func normalizeAssetContractAddress(v string) string {
+	return strings.TrimSpace(v)
 }

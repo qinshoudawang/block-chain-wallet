@@ -25,9 +25,10 @@ type WithdrawOrder struct {
 	Amount   string `gorm:"type:varchar(80);not null"`
 	Sequence uint64 `gorm:"not null;uniqueIndex:uk_chain_from_sequence,priority:3"`
 
-	SignedPayload         string `gorm:"type:text"`
-	SignedPayloadEncoding string `gorm:"type:varchar(16);not null;default:'hex'"`
-	ChainMetaJSON         string `gorm:"type:text"`
+	SignedPayload                  string `gorm:"type:text"`
+	SignedPayloadEncoding          string `gorm:"type:varchar(16);not null;default:'hex'"`
+	TokenContractAddress           string `gorm:"type:varchar(128)"`
+	NetworkFeeAssetContractAddress string `gorm:"type:varchar(128);not null;default:''"`
 
 	TxHash string `gorm:"type:varchar(128);index"`
 

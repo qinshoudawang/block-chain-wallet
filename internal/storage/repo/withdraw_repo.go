@@ -159,12 +159,31 @@ func (r *WithdrawRepo) updateConfirmationsWithDB(db *gorm.DB, withdrawID string,
 	return res.RowsAffected > 0, res.Error
 }
 
-func (r *WithdrawRepo) SaveSettlement(ctx context.Context, withdrawID string, networkFeeAmount, actualSpentAmount *big.Int) (bool, error) {
-	return r.saveSettlementWithDB(r.db.WithContext(ctx), withdrawID, networkFeeAmount, actualSpentAmount)
+func (r *WithdrawRepo) SaveSettlement(
+	ctx context.Context,
+	withdrawID string,
+	networkFeeAssetContractAddress string,
+	networkFeeAmount *big.Int,
+	actualSpentAmount *big.Int,
+) (bool, error) {
+	return r.saveSettlementWithDB(
+		r.db.WithContext(ctx),
+		withdrawID,
+		networkFeeAssetContractAddress,
+		networkFeeAmount,
+		actualSpentAmount,
+	)
 }
 
-func (r *WithdrawRepo) saveSettlementWithDB(db *gorm.DB, withdrawID string, networkFeeAmount, actualSpentAmount *big.Int) (bool, error) {
+func (r *WithdrawRepo) saveSettlementWithDB(
+	db *gorm.DB,
+	withdrawID string,
+	networkFeeAssetContractAddress string,
+	networkFeeAmount *big.Int,
+	actualSpentAmount *big.Int,
+) (bool, error) {
 	updates := map[string]any{}
+	updates["network_fee_asset_contract_address"] = networkFeeAssetContractAddress
 	if networkFeeAmount != nil {
 		updates["network_fee_amount"] = networkFeeAmount.String()
 	}
@@ -184,8 +203,10 @@ func (r *WithdrawRepo) ConfirmWithSettlement(
 	blockNum uint64,
 	conf int,
 	threshold int,
+	transferAssetContractAddress string,
+	transferSpentAmount *big.Int,
+	networkFeeAssetContractAddress string,
 	networkFeeAmount *big.Int,
-	actualSpentAmount *big.Int,
 ) (bool, error) {
 	if r == nil || r.db == nil {
 		return false, errors.New("withdraw repo not configured")
@@ -193,11 +214,35 @@ func (r *WithdrawRepo) ConfirmWithSettlement(
 	var updated bool
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if lr != nil {
-			if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, actualSpentAmount); err != nil {
-				return err
+			if transferAssetContractAddress == networkFeeAssetContractAddress {
+				totalSpent := new(big.Int)
+				if transferSpentAmount != nil {
+					totalSpent = totalSpent.Add(totalSpent, transferSpentAmount)
+				}
+				if networkFeeAmount != nil {
+					totalSpent = totalSpent.Add(totalSpent, networkFeeAmount)
+				}
+				if totalSpent.Sign() > 0 {
+					if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, transferAssetContractAddress, totalSpent); err != nil {
+						return err
+					}
+				}
+			} else {
+				if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, transferAssetContractAddress, transferSpentAmount); err != nil {
+					return err
+				}
+				if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, networkFeeAssetContractAddress, networkFeeAmount); err != nil {
+					return err
+				}
 			}
 		}
-		ok, err := r.saveSettlementWithDB(tx, withdrawID, networkFeeAmount, actualSpentAmount)
+		ok, err := r.saveSettlementWithDB(
+			tx,
+			withdrawID,
+			networkFeeAssetContractAddress,
+			networkFeeAmount,
+			transferSpentAmount,
+		)
 		if err != nil {
 			return err
 		}

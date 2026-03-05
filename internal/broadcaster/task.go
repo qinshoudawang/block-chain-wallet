@@ -16,7 +16,7 @@ type BroadcastTask struct {
 	Sequence              uint64 `json:"sequence"`
 	SignedPayload         string `json:"signed_payload"`
 	SignedPayloadEncoding string `json:"signed_payload_encoding"`
-	ChainMetaJSON         string `json:"chain_meta_json,omitempty"`
+	TokenContractAddress  string `json:"token_contract_address,omitempty"`
 	CreatedAt             int64  `json:"created_at"`
 	Attempt               int    `json:"attempt"`
 }

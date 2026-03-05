@@ -29,7 +29,7 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
-	log.Printf("[withdraw-handler] request parsed chain=%s to=%s amount=%s", req.Chain, req.To, req.Amount)
+	log.Printf("[withdraw-handler] request parsed chain=%s to=%s amount=%s token=%s", req.Chain, req.To, req.Amount, req.Token)
 
 	canonicalChain, err := h.svc.MatchRequestChain(req.Chain)
 	if err != nil {
@@ -43,6 +43,7 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 		Chain:  canonicalChain,
 		To:     req.To,
 		Amount: req.Amount,
+		Token:  req.Token,
 	})
 	if err != nil {
 		log.Printf("[withdraw-handler] create/sign failed chain=%s to=%s amount=%s err=%v", req.Chain, req.To, req.Amount, err)

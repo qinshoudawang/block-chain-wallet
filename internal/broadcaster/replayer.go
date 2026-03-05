@@ -66,7 +66,7 @@ func (r *Replayer) tryReplay(ctx context.Context, o model.WithdrawOrder) {
 		Sequence:              o.Sequence,
 		SignedPayload:         o.SignedPayload,
 		SignedPayloadEncoding: normalizeSignedPayloadEncoding(o.SignedPayloadEncoding),
-		ChainMetaJSON:         o.ChainMetaJSON,
+		TokenContractAddress:  o.TokenContractAddress,
 		CreatedAt:             time.Now().Unix(),
 		Attempt:               o.RetryCount,
 	}

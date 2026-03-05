@@ -31,3 +31,26 @@ HD 地址分配（记录 user_id -> derivation index -> address）
 ### Key Manager（KMS/HSM/MPC/TEE）
 
 密钥材料/派生/签名在安全硬件或受控环境
+
+## Withdraw API 示例
+
+EVM 原生币转账（`token` 不传）：
+
+```json
+{
+  "chain": "ethereum",
+  "to": "0x1111111111111111111111111111111111111111",
+  "amount": "10000000000000000"
+}
+```
+
+EVM ERC20 转账（传 token 合约地址）：
+
+```json
+{
+  "chain": "ethereum",
+  "to": "0x1111111111111111111111111111111111111111",
+  "amount": "1000000",
+  "token": "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+}
+```

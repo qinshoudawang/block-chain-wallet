@@ -116,6 +116,7 @@ type WithdrawInput struct {
 	Chain  string
 	To     string
 	Amount string // atomic-unit decimal
+	Token  string // optional token contract (EVM)
 }
 
 func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (task *broadcaster.BroadcastTask, err error) {
@@ -124,21 +125,20 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		return nil, err
 	}
 	fromAddr := profile.FromAddress
-	log.Printf("[withdraw-service] create/sign start chain=%s from=%s to=%s amount=%s", chain, fromAddr, in.To, in.Amount)
-
-	// 1) Validate chain-specific input and normalize address/amount.
-	toAddr, amt, err := chainClient.ValidateWithdrawInput(chain, in.To, in.Amount)
+	// 1) Validate chain-specific input and normalize address/amount/token metadata.
+	toAddr, amt, tokenContract, err := s.validateWithdrawInput(chain, in, chainClient)
 	if err != nil {
 		log.Printf("[withdraw-service] validate input failed chain=%s from=%s to=%s amount=%s err=%v", chain, fromAddr, in.To, in.Amount, err)
 		return nil, err
 	}
+	log.Printf("[withdraw-service] create/sign start chain=%s from=%s to=%s amount=%s token=%s", chain, fromAddr, in.To, in.Amount, tokenContract)
 
 	withdrawID := uuid.NewString()
 	requestID := uuid.NewString()
-	rt := s.chainRuntime(chain, profile, withdrawID)
+	rt := s.chainRuntime(chain, profile, withdrawID, tokenContract)
 
 	// 2) Freeze ledger balance first and run risk approval before signing.
-	if err := s.freezeAndApprove(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, amt); err != nil {
+	if err := s.freezeAndApprove(ctx, chain, profile, withdrawID, requestID, tokenContract, toAddr, in.Amount, amt); err != nil {
 		log.Printf("[withdraw-service] precheck failed chain=%s withdraw_id=%s request_id=%s err=%v", chain, withdrawID, requestID, err)
 		return nil, err
 	}
@@ -201,7 +201,7 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		in.Amount,
 		sequenceAlloc.Value,
 		sresp.SignedTx,
-		"",
+		tokenContract,
 	)
 	if err != nil {
 		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s sequence=%s err=%v", chain, withdrawID, requestID, logSequence, err)
@@ -220,10 +220,26 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 		Sequence:              sequenceAlloc.Value,
 		SignedPayload:         signedPayload,
 		SignedPayloadEncoding: signedPayloadEncoding,
-		ChainMetaJSON:         "",
+		TokenContractAddress:  tokenContract,
 		CreatedAt:             time.Now().Unix(),
 		Attempt:               0,
 	}, nil
+}
+
+func (s *Service) validateWithdrawInput(
+	chain string,
+	in WithdrawInput,
+	chainClient chainclient.Client,
+) (toAddr string, amount *big.Int, tokenContract string, err error) {
+	toAddr, amount, err = chainClient.ValidateWithdrawInput(chain, in.To, in.Amount)
+	if err != nil {
+		return "", nil, "", err
+	}
+	tokenContract, err = chainclient.NormalizeWithdrawTokenContract(chain, in.Token)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return toAddr, amount, tokenContract, nil
 }
 
 func (s *Service) freezeAndApprove(
@@ -232,16 +248,19 @@ func (s *Service) freezeAndApprove(
 	profile ChainProfile,
 	withdrawID string,
 	requestID string,
+	tokenContractAddress string,
 	toAddr string,
 	amountStr string,
 	amount *big.Int,
 ) error {
-	freezeAmount := new(big.Int).Set(amount)
-	if profile.FreezeReserve != nil && profile.FreezeReserve.Sign() > 0 {
-		freezeAmount.Add(freezeAmount, profile.FreezeReserve)
-	}
-	if _, err := s.deps.Ledger.FreezeWithdraw(ctx, chain, profile.FromAddress, withdrawID, freezeAmount); err != nil {
+	plans, err := buildFreezePlans(tokenContractAddress, amount, profile.FreezeReserve)
+	if err != nil {
 		return err
+	}
+	for _, p := range plans {
+		if _, err := s.deps.Ledger.FreezeWithdraw(ctx, chain, profile.FromAddress, p.assetContractAddress, withdrawID, p.amount); err != nil {
+			return err
+		}
 	}
 	if s.deps.Risk == nil {
 		return nil
@@ -254,6 +273,29 @@ func (s *Service) freezeAndApprove(
 		To:         toAddr,
 		Amount:     amountStr,
 	})
+}
+
+type freezePlan struct {
+	assetContractAddress string
+	amount               *big.Int
+}
+
+func buildFreezePlans(tokenContractAddress string, transferAmount *big.Int, feeReserve *big.Int) ([]freezePlan, error) {
+	tokenContractAddress = strings.TrimSpace(tokenContractAddress)
+	if tokenContractAddress == "" {
+		freezeAmount := new(big.Int).Set(transferAmount)
+		if feeReserve != nil && feeReserve.Sign() > 0 {
+			freezeAmount.Add(freezeAmount, feeReserve)
+		}
+		return []freezePlan{{assetContractAddress: "", amount: freezeAmount}}, nil
+	}
+	if feeReserve == nil || feeReserve.Sign() <= 0 {
+		return nil, errors.New("freeze reserve is required for token withdraw")
+	}
+	return []freezePlan{
+		{assetContractAddress: tokenContractAddress, amount: new(big.Int).Set(transferAmount)},
+		{assetContractAddress: "", amount: new(big.Int).Set(feeReserve)},
+	}, nil
 }
 
 func (s *Service) releaseFrozenOnError(ctx context.Context, withdrawID string) error {
@@ -270,7 +312,7 @@ func (s *Service) insertSignedOrder(
 	amount string,
 	sequence uint64,
 	signedTx []byte,
-	chainMetaJSON string,
+	tokenContractAddress string,
 ) (signedPayload string, signedPayloadEncoding string, err error) {
 	spec, err := helpers.ResolveChainSpec(chain)
 	if err != nil {
@@ -297,7 +339,7 @@ func (s *Service) insertSignedOrder(
 		Sequence:              sequence,
 		SignedPayload:         signedPayload,
 		SignedPayloadEncoding: signedPayloadEncoding,
-		ChainMetaJSON:         chainMetaJSON,
+		TokenContractAddress:  tokenContractAddress,
 		TxHash:                "",
 	}); err != nil {
 		return "", "", err
@@ -305,11 +347,12 @@ func (s *Service) insertSignedOrder(
 	return signedPayload, signedPayloadEncoding, nil
 }
 
-func (s *Service) chainRuntime(chain string, profile ChainProfile, withdrawID string) chainclient.Runtime {
+func (s *Service) chainRuntime(chain string, profile ChainProfile, withdrawID string, tokenContract string) chainclient.Runtime {
 	return chainclient.Runtime{
 		Chain:            chain,
 		ChainID:          profile.ChainID,
 		FromAddress:      profile.FromAddress,
+		TokenContract:    tokenContract,
 		WithdrawID:       withdrawID,
 		MinConf:          profile.MinConf,
 		FeeTarget:        profile.FeeTarget,

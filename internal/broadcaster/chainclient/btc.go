@@ -44,7 +44,8 @@ func (c *btcClient) GetLatestHeight(ctx context.Context) (uint64, error) {
 	return c.rpc.LatestHeight()
 }
 
-func (c *btcClient) GetConfirmation(ctx context.Context, txHash string, amount string, latestHeight uint64) (*Confirmation, error) {
+func (c *btcClient) GetConfirmation(ctx context.Context, txHash string, amount string, tokenContractAddress string, latestHeight uint64) (*Confirmation, error) {
+	_ = tokenContractAddress
 	if c == nil || c.rpc == nil {
 		return nil, errors.New("btc rpc client is required")
 	}
@@ -96,8 +97,10 @@ func (c *btcClient) calcSettlement(ctx context.Context, tx *btcjson.TxRawResult,
 	feeSat := totalInSat - totalOutSat
 	feeAmount := big.NewInt(feeSat)
 	return &Settlement{
-		NetworkFeeAmount:  feeAmount,
-		ActualSpentAmount: new(big.Int).Add(amount, feeAmount),
+		TransferAssetContractAddress:   "",
+		TransferSpentAmount:            amount,
+		NetworkFeeAssetContractAddress: "",
+		NetworkFeeAmount:               feeAmount,
 	}, nil
 }
 

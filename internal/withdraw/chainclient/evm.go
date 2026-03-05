@@ -98,7 +98,38 @@ func (c *evmClient) BuildUnsignedWithdrawTx(
 	}
 	from := common.HexToAddress(rt.FromAddress)
 	to := common.HexToAddress(toAddr)
-	return c.evm.BuildUnsignedTx(ctx, from, to, amount, nil, rt.ChainID, nonce)
+	tokenContract := strings.TrimSpace(rt.TokenContract)
+
+	target := to
+	value := amount
+	var data []byte
+	if tokenContract != "" {
+		if !common.IsHexAddress(tokenContract) {
+			return nil, errors.New("invalid evm token contract address")
+		}
+		var err error
+		data, err = encodeERC20TransferData(to, amount)
+		if err != nil {
+			return nil, err
+		}
+		target = common.HexToAddress(tokenContract)
+		value = big.NewInt(0)
+	}
+	return c.evm.BuildUnsignedTx(ctx, from, target, value, data, rt.ChainID, nonce)
+}
+
+func encodeERC20TransferData(to common.Address, amount *big.Int) ([]byte, error) {
+	if amount == nil || amount.Sign() <= 0 {
+		return nil, errors.New("invalid evm amount")
+	}
+	methodID := []byte{0xa9, 0x05, 0x9c, 0xbb}
+	paddedTo := common.LeftPadBytes(to.Bytes(), 32)
+	paddedAmount := common.LeftPadBytes(amount.Bytes(), 32)
+	data := make([]byte, 0, 4+32+32)
+	data = append(data, methodID...)
+	data = append(data, paddedTo...)
+	data = append(data, paddedAmount...)
+	return data, nil
 }
 
 func (c *evmClient) BuildRBFUnsignedWithdrawTx(
