@@ -86,9 +86,27 @@ func (r *AddressRepo) FindUserIDByChainAddress(ctx context.Context, chain string
 	var out addressmodel.UserAddress
 	if err := r.db.WithContext(ctx).
 		Select("user_id").
-		Where("chain = ? AND address = ?", chain, address).
+		Where("chain = ? AND lower(address) = lower(?)", chain, address).
 		First(&out).Error; err != nil {
 		return "", err
 	}
 	return out.UserID, nil
+}
+
+func (r *AddressRepo) GetByChainAddress(ctx context.Context, chain string, address string) (*addressmodel.UserAddress, bool, error) {
+	if r == nil || r.db == nil {
+		return nil, false, errors.New("address repo not configured")
+	}
+	chain = strings.TrimSpace(chain)
+	address = strings.TrimSpace(address)
+	var out addressmodel.UserAddress
+	if err := r.db.WithContext(ctx).
+		Where("chain = ? AND lower(address) = lower(?)", chain, address).
+		First(&out).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &out, true, nil
 }

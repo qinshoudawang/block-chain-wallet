@@ -265,13 +265,14 @@ func (r *DepositRepo) ConfirmAndCredit(ctx context.Context, id uint64) (bool, er
 
 		var acct ledgermodel.LedgerAccount
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("chain = ? AND address = ? AND asset_contract_address = ?", rec.Chain, rec.ToAddress, rec.TokenContractAddress).
+			Where("chain = ? AND address = ? AND asset_contract_address = ? AND user_id = ?", rec.Chain, rec.ToAddress, rec.TokenContractAddress, rec.UserID).
 			First(&acct).Error
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			acct = ledgermodel.LedgerAccount{
+				UserID:               rec.UserID,
 				Chain:                rec.Chain,
 				Address:              rec.ToAddress,
 				AssetContractAddress: rec.TokenContractAddress,

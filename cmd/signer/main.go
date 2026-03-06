@@ -14,10 +14,15 @@ import (
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/redisx"
 	"wallet-system/internal/signer"
+	"wallet-system/internal/signer/derivation"
+	"wallet-system/internal/signer/policy"
 	"wallet-system/internal/signer/provider"
+	"wallet-system/internal/storage/repo"
 	signpb "wallet-system/proto/signer"
 
 	"google.golang.org/grpc"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 type grpcServer struct {
@@ -56,8 +61,9 @@ func main() {
 
 	rdc := initRedis(ctx)
 	defer rdc.RDB.Close()
+	db := initGorm()
 	profiles := buildChainProfiles()
-	svc := initSignerService(rdc, profiles)
+	svc := initSignerService(rdc, profiles, repo.NewAddressRepo(db))
 	lis := initListener()
 	defer lis.Close()
 	gs := initGRPCServer(svc)
@@ -97,21 +103,40 @@ func buildChainProfiles() map[string]config.ChainProfile {
 	return profiles
 }
 
-func initSignerService(rdc *redisx.Client, profiles map[string]config.ChainProfile) *signer.Service {
+func initSignerService(rdc *redisx.Client, profiles map[string]config.ChainProfile, addressRepo *repo.AddressRepo) *signer.Service {
 	authSecret := []byte(helpers.MustEnv("SIGNER_AUTH_SECRET"))
 	if len(authSecret) == 0 {
 		log.Fatal("SIGNER_AUTH_SECRET is required")
 	}
 	mnemonic := helpers.MustEnv("SIGNER_MNEMONIC")
+	deriver, err := derivation.NewDeriver(mnemonic)
+	if err != nil {
+		log.Fatalf("init address deriver failed: %v", err)
+	}
 	registry := provider.NewRegistry()
-	registerEVMSignerProviders(registry, profiles)
+	registerEVMSignerProviders(registry, profiles, deriver, addressRepo)
 	registerBTCSignerProvider(registry, profiles)
 	registerSOLSignerProvider(registry, profiles)
 
-	return signer.NewService(rdc.RDB, registry, authSecret, mnemonic)
+	return signer.NewService(rdc.RDB, registry, authSecret, mnemonic, policy.NewPolicyEngine(addressRepo))
 }
 
-func registerEVMSignerProviders(registry *provider.Registry, profiles map[string]config.ChainProfile) {
+func initGorm() *gorm.DB {
+	dsn := "host=" + helpers.Getenv("DB_HOST", "127.0.0.1") +
+		" port=" + helpers.Getenv("DB_PORT", "5432") +
+		" user=" + helpers.MustEnv("DB_USER") +
+		" password=" + helpers.MustEnv("DB_PASS") +
+		" dbname=" + helpers.MustEnv("DB_NAME") +
+		" sslmode=" + helpers.Getenv("DB_SSLMODE", "disable") +
+		" TimeZone=" + helpers.Getenv("DB_TZ", "Asia/Shanghai")
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("init postgres failed: %v", err)
+	}
+	return db
+}
+
+func registerEVMSignerProviders(registry *provider.Registry, profiles map[string]config.ChainProfile, deriver *derivation.Deriver, addressRepo *repo.AddressRepo) {
 	priv := helpers.MustEnv("ETH_HOT_WALLET_PRIV")
 	for chain, p := range profiles {
 		spec, err := helpers.ResolveChainSpec(chain)
@@ -124,7 +149,7 @@ func registerEVMSignerProviders(registry *provider.Registry, profiles map[string
 		if p.ChainID == nil {
 			log.Fatalf("evm chain id is required for chain=%s", chain)
 		}
-		evmSigner, err := provider.NewEVMSigner(priv, p.ChainID)
+		evmSigner, err := provider.NewEVMSigner(priv, p.ChainID, deriver, addressRepo)
 		if err != nil {
 			log.Fatalf("init evm local signer failed chain=%s err=%v", chain, err)
 		}

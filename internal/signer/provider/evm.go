@@ -1,10 +1,17 @@
 package provider
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"errors"
 	"math/big"
+	"strings"
 
+	"wallet-system/internal/signer/derivation"
+	"wallet-system/internal/storage/repo"
+	signpb "wallet-system/proto/signer"
+
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -12,9 +19,11 @@ import (
 type EVMSigner struct {
 	privKey *ecdsa.PrivateKey
 	chainID *big.Int
+	deriver *derivation.Deriver
+	addrs   *repo.AddressRepo
 }
 
-func NewEVMSigner(hexPriv string, chainID *big.Int) (*EVMSigner, error) {
+func NewEVMSigner(hexPriv string, chainID *big.Int, deriver *derivation.Deriver, addrs *repo.AddressRepo) (*EVMSigner, error) {
 	if hexPriv == "" {
 		return nil, errors.New("empty EVM private key")
 	}
@@ -22,20 +31,83 @@ func NewEVMSigner(hexPriv string, chainID *big.Int) (*EVMSigner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &EVMSigner{privKey: priv, chainID: chainID}, nil
+	return &EVMSigner{privKey: priv, chainID: chainID, deriver: deriver, addrs: addrs}, nil
 }
 
-func (s *EVMSigner) Sign(unsignedTx []byte) ([]byte, error) {
+func (s *EVMSigner) Sign(ctx context.Context, req *signpb.SignRequest) ([]byte, error) {
+	if req == nil {
+		return nil, errors.New("sign request is nil")
+	}
+	priv := s.privKey
+	expectedFrom := ""
+	if strings.EqualFold(strings.TrimSpace(req.GetCaller()), "sweeper") {
+		var err error
+		priv, expectedFrom, err = s.resolveSweepSigner(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return signEVMUnsignedWithKey(req.GetUnsignedTx(), s.chainID, priv, expectedFrom)
+}
+
+func (s *EVMSigner) resolveSweepSigner(ctx context.Context, req *signpb.SignRequest) (*ecdsa.PrivateKey, string, error) {
+	if s.deriver == nil {
+		return nil, "", errors.New("evm deriver not configured")
+	}
+	if s.addrs == nil {
+		return nil, "", errors.New("address repo not configured")
+	}
+	fromAddr := strings.TrimSpace(req.GetFromAddress())
+	row, ok, err := s.addrs.GetByChainAddress(ctx, req.GetChain(), fromAddr)
+	if err != nil {
+		return nil, "", err
+	}
+	if !ok {
+		return nil, "", errors.New("sweep from_address is not a derived user address")
+	}
+	priv, derivedAddr, err := s.deriver.DeriveEVMPrivateKey(req.GetChain(), row.AddressIndex)
+	if err != nil {
+		return nil, "", err
+	}
+	if !strings.EqualFold(derivedAddr, fromAddr) {
+		return nil, "", errors.New("sweep signer address mismatch")
+	}
+	return priv, fromAddr, nil
+}
+
+func signEVMUnsignedWithKey(
+	unsignedTx []byte,
+	expectedChainID *big.Int,
+	priv *ecdsa.PrivateKey,
+	expectedFrom string,
+) ([]byte, error) {
+	if priv == nil {
+		return nil, errors.New("evm private key is required")
+	}
 	var tx types.Transaction
 	if err := tx.UnmarshalBinary(unsignedTx); err != nil {
 		return nil, err
 	}
-
-	signer := types.LatestSignerForChainID(s.chainID)
-	signedTx, err := types.SignTx(&tx, signer, s.privKey)
+	chainID := tx.ChainId()
+	if chainID == nil || chainID.Sign() <= 0 {
+		return nil, errors.New("missing chain id in evm tx")
+	}
+	if expectedChainID != nil && expectedChainID.Sign() > 0 && chainID.Cmp(expectedChainID) != 0 {
+		return nil, errors.New("evm chain id mismatch")
+	}
+	signer := types.LatestSignerForChainID(chainID)
+	signedTx, err := types.SignTx(&tx, signer, priv)
 	if err != nil {
 		return nil, err
 	}
-
+	if strings.TrimSpace(expectedFrom) != "" {
+		from, err := types.Sender(signer, signedTx)
+		if err != nil {
+			return nil, err
+		}
+		if from != common.HexToAddress(expectedFrom) {
+			return nil, errors.New("evm signed from mismatch")
+		}
+	}
 	return signedTx.MarshalBinary()
 }

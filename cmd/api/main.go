@@ -60,7 +60,7 @@ func main() {
 	wsvc := initWithdrawService(rdc, chainProfiles, withdrawChainRegistry, producer, db, signerCli.Client)
 	asvc := address.NewAddressService(db, signerCli.Client)
 	server := initHTTPServer(wsvc, asvc)
-	withdrawGS, withdrawLis := initWithdrawGRPCServer(db, withdrawChainRegistry, producer, signerCli.Client)
+	withdrawGS, withdrawLis := initWithdrawGRPCServer(wsvc)
 	defer withdrawLis.Close()
 
 	if err := runServers(ctx, server, withdrawGS, withdrawLis); err != nil {
@@ -250,10 +250,7 @@ func initHTTPServer(wsvc *withdraw.Service, asvc *address.AddressService) *http.
 }
 
 func initWithdrawGRPCServer(
-	db *gorm.DB,
-	chainRegistry *chainclient.Registry,
-	producer *kafka.Producer,
-	signer signpb.SignerServiceClient,
+	wsvc *withdraw.Service,
 ) (*grpc.Server, net.Listener) {
 	addr := helpers.Getenv("WITHDRAW_GRPC_ADDR", "127.0.0.1:9002")
 	lis, err := net.Listen("tcp", addr)
@@ -265,13 +262,7 @@ func initWithdrawGRPCServer(
 	)
 	withdrawpb.RegisterWithdrawServiceServer(
 		gs,
-		withdraw.NewRBFServer(
-			repo.NewWithdrawRepo(db),
-			chainRegistry,
-			signer,
-			producer,
-			[]byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET")),
-		),
+		withdraw.NewRBFServer(wsvc),
 	)
 	return gs, lis
 }

@@ -1,12 +1,15 @@
 package provider
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
+
+	signpb "wallet-system/proto/signer"
 
 	"github.com/gagliardetto/solana-go"
 )
@@ -32,15 +35,20 @@ func NewSOLSigner(rawPriv string) (*SOLSigner, error) {
 	}, nil
 }
 
-func (s *SOLSigner) Sign(unsignedTx []byte) ([]byte, error) {
+func (s *SOLSigner) Sign(ctx context.Context, req *signpb.SignRequest) ([]byte, error) {
+	_ = ctx
 	if s == nil || len(s.privKey) != ed25519.PrivateKeySize {
 		return nil, errors.New("solana private key is required")
 	}
-	req, tx, err := parseSOLUnsignedWithdrawTx(unsignedTx)
+	if req == nil {
+		return nil, errors.New("sign request is nil")
+	}
+	unsignedTx := req.GetUnsignedTx()
+	unsignedReq, tx, err := parseSOLUnsignedWithdrawTx(unsignedTx)
 	if err != nil {
 		return nil, err
 	}
-	if s.pubKey.String() != req.From {
+	if s.pubKey.String() != unsignedReq.From {
 		return nil, errors.New("solana private key does not match from address")
 	}
 	_, err = tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {

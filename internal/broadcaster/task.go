@@ -3,11 +3,17 @@ package broadcaster
 const (
 	SignedPayloadEncodingHex    = "hex"
 	SignedPayloadEncodingBase64 = "base64"
+
+	TaskTypeWithdraw = "WITHDRAW"
+	TaskTypeSweep    = "SWEEP"
+	TaskTypeTopUp    = "TOPUP"
 )
 
 type BroadcastTask struct {
+	TaskType              string `json:"task_type,omitempty"`
 	Version               int    `json:"version"`
 	WithdrawID            string `json:"withdraw_id"`
+	SweepID               string `json:"sweep_id,omitempty"`
 	RequestID             string `json:"request_id"`
 	Chain                 string `json:"chain"`
 	From                  string `json:"from"`

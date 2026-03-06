@@ -42,6 +42,13 @@ func (c *Client) PendingNonceAt(ctx context.Context, account common.Address) (ui
 	return c.cli.PendingNonceAt(ctx, account)
 }
 
+func (c *Client) BalanceAt(ctx context.Context, account common.Address) (*big.Int, error) {
+	if c == nil || c.cli == nil {
+		return nil, ErrClientNotConfigured
+	}
+	return c.cli.BalanceAt(ctx, account, nil)
+}
+
 func (c *Client) SuggestGasTipCap(ctx context.Context) (*big.Int, error) {
 	if c == nil || c.cli == nil {
 		return nil, ErrClientNotConfigured

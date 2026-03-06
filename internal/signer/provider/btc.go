@@ -2,11 +2,14 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
+
+	signpb "wallet-system/proto/signer"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/txscript"
@@ -41,19 +44,24 @@ func NewBTCSigner(hexPriv string) (*BTCSigner, error) {
 	}, nil
 }
 
-func (s *BTCSigner) Sign(unsignedTx []byte) ([]byte, error) {
+func (s *BTCSigner) Sign(ctx context.Context, req *signpb.SignRequest) ([]byte, error) {
+	_ = ctx
 	if s == nil || s.privKey == nil {
 		return nil, errors.New("btc private key is required")
 	}
-	req, err := parseBTCUnsignedWithdrawTx(unsignedTx)
+	if req == nil {
+		return nil, errors.New("sign request is nil")
+	}
+	unsignedTx := req.GetUnsignedTx()
+	unsignedReq, err := parseBTCUnsignedWithdrawTx(unsignedTx)
 	if err != nil {
 		return nil, err
 	}
-	tx, err := decodeBTCUnsignedRawTx(req.RawTx)
+	tx, err := decodeBTCUnsignedRawTx(unsignedReq.RawTx)
 	if err != nil {
 		return nil, err
 	}
-	inputValues, pkScripts, err := parseBTCPrevoutsForSign(tx, req.Prevouts)
+	inputValues, pkScripts, err := parseBTCPrevoutsForSign(tx, unsignedReq.Prevouts)
 	if err != nil {
 		return nil, err
 	}

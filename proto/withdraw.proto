@@ -6,6 +6,7 @@ option go_package = "proto/withdraw;withdraw";
 
 service WithdrawService {
   rpc SubmitRBF(SubmitRBFRequest) returns (SubmitRBFResponse);
+  rpc SubmitTopUp(SubmitTopUpRequest) returns (SubmitTopUpResponse);
 }
 
 message SubmitRBFRequest {
@@ -21,4 +22,16 @@ message SubmitRBFResponse {
   int64 new_fee_rate_sat_per_vbyte = 5;
   int64 old_fee_sat = 6;
   int64 new_fee_sat = 7;
+}
+
+message SubmitTopUpRequest {
+  string chain = 1;
+  string to_address = 2;
+  string amount = 3;
+}
+
+message SubmitTopUpResponse {
+  string withdraw_id = 1;
+  string request_id = 2;
+  string status = 3;
 }

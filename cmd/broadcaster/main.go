@@ -47,6 +47,7 @@ func main() {
 	utxoReserveRepo := repo.NewUTXOReservationRepo(db)
 	utxoReserve := utxoreserve.NewManager(rdc.RDB, utxoReserveRepo, utxoReserveTTL)
 	withdrawRepo := repo.NewWithdrawRepo(db)
+	sweepRepo := repo.NewSweepRepo(db)
 	ledgerRepo := repo.NewLedgerRepo(db)
 	producer := initKafkaProducer()
 	defer producer.Close()
@@ -58,9 +59,23 @@ func main() {
 	withdrawCli := initWithdrawClient()
 	defer withdrawCli.Close()
 
-	go broadcaster.RunConsumer(ctx, withdrawRepo, clients, utxoReserve, consumer)
+	go broadcaster.RunConsumer(ctx, broadcaster.ConsumerDeps{
+		WithdrawRepo: withdrawRepo,
+		SweepRepo:    sweepRepo,
+		Clients:      clients,
+		UTXOReserve:  utxoReserve,
+		Runtime:      consumer,
+	})
 	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
-	go broadcaster.RunConfirmer(ctx, withdrawRepo, ledgerRepo, clients, utxoReserve, withdrawCli.Client)
+	go broadcaster.RunConfirmer(ctx, broadcaster.ConfirmerDeps{
+		WithdrawRepo: withdrawRepo,
+		SweepRepo:    sweepRepo,
+		LedgerRepo:   ledgerRepo,
+		Clients:      clients,
+		UTXOReserve:  utxoReserve,
+		Redis:        rdc.RDB,
+		WithdrawRPC:  withdrawCli.Client,
+	})
 
 	<-ctx.Done()
 }

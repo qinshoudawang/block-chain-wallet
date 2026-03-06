@@ -27,17 +27,27 @@ type ConsumerRuntime struct {
 
 type Consumer struct {
 	withdrawRepo *repo.WithdrawRepo
+	sweepRepo    *repo.SweepRepo
 	clients      *chainclient.Registry
 	utxoReserve  *utxoreserve.Manager
 	runtime      *ConsumerRuntime
 }
 
-func NewConsumer(withdrawRepo *repo.WithdrawRepo, clients *chainclient.Registry, utxoReserve *utxoreserve.Manager, runtime *ConsumerRuntime) *Consumer {
+type ConsumerDeps struct {
+	WithdrawRepo *repo.WithdrawRepo
+	SweepRepo    *repo.SweepRepo
+	Clients      *chainclient.Registry
+	UTXOReserve  *utxoreserve.Manager
+	Runtime      *ConsumerRuntime
+}
+
+func NewConsumer(deps ConsumerDeps) *Consumer {
 	return &Consumer{
-		withdrawRepo: withdrawRepo,
-		clients:      clients,
-		utxoReserve:  utxoReserve,
-		runtime:      runtime,
+		withdrawRepo: deps.WithdrawRepo,
+		sweepRepo:    deps.SweepRepo,
+		clients:      deps.Clients,
+		utxoReserve:  deps.UTXOReserve,
+		runtime:      deps.Runtime,
 	}
 }
 
@@ -54,8 +64,8 @@ func (c *ConsumerRuntime) Close() error {
 	return nil
 }
 
-func RunConsumer(ctx context.Context, withdrawRepo *repo.WithdrawRepo, clients *chainclient.Registry, utxoReserve *utxoreserve.Manager, runtime *ConsumerRuntime) {
-	NewConsumer(withdrawRepo, clients, utxoReserve, runtime).Run(ctx)
+func RunConsumer(ctx context.Context, deps ConsumerDeps) {
+	NewConsumer(deps).Run(ctx)
 }
 
 func (c *Consumer) Run(ctx context.Context) {
@@ -87,9 +97,27 @@ func (c *Consumer) handleMessage(ctx context.Context, msg kafkago.Message) {
 	}
 
 	log.Printf(
-		"message received topic=%s partition=%d offset=%d withdraw=%s req=%s sequence=%s",
-		c.runtime.Topic, msg.Partition, msg.Offset, task.WithdrawID, task.RequestID, sequenceForLog(task.Sequence),
+		"message received topic=%s partition=%d offset=%d type=%s withdraw=%s sweep=%s req=%s sequence=%s",
+		c.runtime.Topic, msg.Partition, msg.Offset, normalizeTaskType(task.TaskType), task.WithdrawID, task.SweepID, task.RequestID, sequenceForLog(task.Sequence),
 	)
+
+	switch normalizeTaskType(task.TaskType) {
+	case TaskTypeSweep:
+		c.handleSweepTask(ctx, task, msg)
+	case TaskTypeTopUp:
+		c.handleTopUpTask(ctx, task, msg)
+	default:
+		c.handleWithdrawTask(ctx, task, msg)
+	}
+}
+
+func (c *Consumer) handleWithdrawTask(ctx context.Context, task BroadcastTask, msg kafkago.Message) {
+	if c.withdrawRepo == nil {
+		log.Printf("withdraw repo not configured for withdraw task withdraw=%s", task.WithdrawID)
+		c.publishDLQTask(ctx, task, string(msg.Key))
+		c.commit(ctx, msg)
+		return
+	}
 
 	chain, cli, err := c.clients.Resolve(task.Chain)
 	if err != nil {
@@ -110,6 +138,55 @@ func (c *Consumer) handleMessage(ctx context.Context, msg kafkago.Message) {
 	if _, dbErr := c.withdrawRepo.MarkBroadcasted(ctx, task.WithdrawID, txHash); dbErr != nil {
 		log.Printf("mark broadcasted failed withdraw=%s tx=%s err=%v", task.WithdrawID, txHash, dbErr)
 	}
+	c.commit(ctx, msg)
+}
+
+func (c *Consumer) handleSweepTask(ctx context.Context, task BroadcastTask, msg kafkago.Message) {
+	if c.sweepRepo == nil {
+		log.Printf("sweep repo not configured for sweep task sweep=%s", task.SweepID)
+		c.publishDLQTask(ctx, task, string(msg.Key))
+		c.commit(ctx, msg)
+		return
+	}
+	chain, cli, err := c.clients.Resolve(task.Chain)
+	if err != nil {
+		_ = c.sweepRepo.MarkFailed(ctx, task.SweepID, err.Error())
+		c.publishDLQTask(ctx, task, string(msg.Key))
+		log.Printf("DLQ sweep=%s chain=%s err=%v", task.SweepID, task.Chain, err)
+		c.commit(ctx, msg)
+		return
+	}
+	txHash, err := broadcastWithRetry(ctx, cli, task.SignedPayload, task.SignedPayloadEncoding)
+	if err != nil {
+		_ = c.sweepRepo.MarkFailed(ctx, task.SweepID, err.Error())
+		c.publishDLQTask(ctx, task, string(msg.Key))
+		log.Printf("DLQ sweep=%s req=%s err=%v", task.SweepID, task.RequestID, err)
+		c.commit(ctx, msg)
+		return
+	}
+	log.Printf("broadcast sweep ok chain=%s sweep=%s req=%s tx=%s", chain, task.SweepID, task.RequestID, txHash)
+	if err := c.sweepRepo.MarkBroadcasted(ctx, task.SweepID, txHash); err != nil {
+		log.Printf("mark sweep broadcasted failed sweep=%s tx=%s err=%v", task.SweepID, txHash, err)
+	}
+	c.commit(ctx, msg)
+}
+
+func (c *Consumer) handleTopUpTask(ctx context.Context, task BroadcastTask, msg kafkago.Message) {
+	chain, cli, err := c.clients.Resolve(task.Chain)
+	if err != nil {
+		c.publishDLQTask(ctx, task, string(msg.Key))
+		log.Printf("DLQ topup req=%s chain=%s err=%v", task.RequestID, task.Chain, err)
+		c.commit(ctx, msg)
+		return
+	}
+	txHash, err := broadcastWithRetry(ctx, cli, task.SignedPayload, task.SignedPayloadEncoding)
+	if err != nil {
+		c.publishDLQTask(ctx, task, string(msg.Key))
+		log.Printf("DLQ topup req=%s err=%v", task.RequestID, err)
+		c.commit(ctx, msg)
+		return
+	}
+	log.Printf("broadcast topup ok chain=%s req=%s from=%s to=%s amount=%s tx=%s", chain, task.RequestID, task.From, task.To, task.Amount, txHash)
 	c.commit(ctx, msg)
 }
 
@@ -201,5 +278,16 @@ func normalizeSignedPayloadHex(payload string, encoding string) (string, error) 
 		return hex.EncodeToString(raw), nil
 	default:
 		return "", errors.New("unsupported signed payload encoding")
+	}
+}
+
+func normalizeTaskType(v string) string {
+	switch v {
+	case TaskTypeSweep:
+		return TaskTypeSweep
+	case TaskTypeTopUp:
+		return TaskTypeTopUp
+	default:
+		return TaskTypeWithdraw
 	}
 }

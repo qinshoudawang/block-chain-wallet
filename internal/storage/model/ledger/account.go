@@ -7,6 +7,8 @@ import "time"
 type LedgerAccount struct {
 	ID uint64 `gorm:"primaryKey;autoIncrement"`
 
+	UserID string `gorm:"type:varchar(64);not null;default:'';index"`
+
 	Chain                string `gorm:"type:varchar(32);not null;uniqueIndex:uk_ledger_chain_addr_asset,priority:1"`
 	Address              string `gorm:"type:varchar(128);not null;uniqueIndex:uk_ledger_chain_addr_asset,priority:2"`
 	AssetContractAddress string `gorm:"type:varchar(128);not null;default:'';uniqueIndex:uk_ledger_chain_addr_asset,priority:3"`

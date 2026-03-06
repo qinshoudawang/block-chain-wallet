@@ -4,6 +4,7 @@ import (
 	addressmodel "wallet-system/internal/storage/model/address"
 	depositmodel "wallet-system/internal/storage/model/deposit"
 	ledgermodel "wallet-system/internal/storage/model/ledger"
+	sweepmodel "wallet-system/internal/storage/model/sweep"
 	userledgermodel "wallet-system/internal/storage/model/userledger"
 	utxomodel "wallet-system/internal/storage/model/utxo"
 	withdrawmodel "wallet-system/internal/storage/model/withdraw"
@@ -12,7 +13,6 @@ import (
 )
 
 var resetTables = []string{
-	// normalized table names in this project
 	"withdraw_orders",
 	"deposit_records",
 	"deposit_cursors",
@@ -24,12 +24,7 @@ var resetTables = []string{
 	"hd_wallets",
 	"user_addresses",
 	"utxo_reservations",
-	// accidental generic names caused by old struct names
-	"records",
-	"cursors",
-	"blocks",
-	"accounts",
-	"entries",
+	"sweep_orders",
 }
 
 // All creates/updates tables used by withdraw execution and broadcaster workers.
@@ -46,40 +41,9 @@ func All(db *gorm.DB) error {
 		&addressmodel.HDWallet{},
 		&addressmodel.UserAddress{},
 		&utxomodel.UTXOReservation{},
+		&sweepmodel.SweepOrder{},
 	); err != nil {
 		return err
-	}
-	m := db.Migrator()
-	// Non-compatible schema refresh for token multi-asset ledger indexes.
-	if m.HasIndex(&ledgermodel.LedgerAccount{}, "uk_ledger_chain_addr") {
-		if err := m.DropIndex(&ledgermodel.LedgerAccount{}, "uk_ledger_chain_addr"); err != nil {
-			return err
-		}
-	}
-	if !m.HasIndex(&ledgermodel.LedgerAccount{}, "uk_ledger_chain_addr_asset") {
-		if err := m.CreateIndex(&ledgermodel.LedgerAccount{}, "uk_ledger_chain_addr_asset"); err != nil {
-			return err
-		}
-	}
-	if m.HasIndex(&ledgermodel.LedgerFreeze{}, "idx_chain_addr_status") {
-		if err := m.DropIndex(&ledgermodel.LedgerFreeze{}, "idx_chain_addr_status"); err != nil {
-			return err
-		}
-	}
-	if m.HasIndex(&ledgermodel.LedgerFreeze{}, "uk_biz") {
-		if err := m.DropIndex(&ledgermodel.LedgerFreeze{}, "uk_biz"); err != nil {
-			return err
-		}
-	}
-	if !m.HasIndex(&ledgermodel.LedgerFreeze{}, "idx_chain_addr_asset_status") {
-		if err := m.CreateIndex(&ledgermodel.LedgerFreeze{}, "idx_chain_addr_asset_status"); err != nil {
-			return err
-		}
-	}
-	if !m.HasIndex(&ledgermodel.LedgerFreeze{}, "uk_biz") {
-		if err := m.CreateIndex(&ledgermodel.LedgerFreeze{}, "uk_biz"); err != nil {
-			return err
-		}
 	}
 	return nil
 }

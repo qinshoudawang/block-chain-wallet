@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WithdrawService_SubmitRBF_FullMethodName = "/withdraw.WithdrawService/SubmitRBF"
+	WithdrawService_SubmitRBF_FullMethodName   = "/withdraw.WithdrawService/SubmitRBF"
+	WithdrawService_SubmitTopUp_FullMethodName = "/withdraw.WithdrawService/SubmitTopUp"
 )
 
 // WithdrawServiceClient is the client API for WithdrawService service.
@@ -27,6 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WithdrawServiceClient interface {
 	SubmitRBF(ctx context.Context, in *SubmitRBFRequest, opts ...grpc.CallOption) (*SubmitRBFResponse, error)
+	SubmitTopUp(ctx context.Context, in *SubmitTopUpRequest, opts ...grpc.CallOption) (*SubmitTopUpResponse, error)
 }
 
 type withdrawServiceClient struct {
@@ -47,11 +49,22 @@ func (c *withdrawServiceClient) SubmitRBF(ctx context.Context, in *SubmitRBFRequ
 	return out, nil
 }
 
+func (c *withdrawServiceClient) SubmitTopUp(ctx context.Context, in *SubmitTopUpRequest, opts ...grpc.CallOption) (*SubmitTopUpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitTopUpResponse)
+	err := c.cc.Invoke(ctx, WithdrawService_SubmitTopUp_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WithdrawServiceServer is the server API for WithdrawService service.
 // All implementations must embed UnimplementedWithdrawServiceServer
 // for forward compatibility.
 type WithdrawServiceServer interface {
 	SubmitRBF(context.Context, *SubmitRBFRequest) (*SubmitRBFResponse, error)
+	SubmitTopUp(context.Context, *SubmitTopUpRequest) (*SubmitTopUpResponse, error)
 	mustEmbedUnimplementedWithdrawServiceServer()
 }
 
@@ -64,6 +77,9 @@ type UnimplementedWithdrawServiceServer struct{}
 
 func (UnimplementedWithdrawServiceServer) SubmitRBF(context.Context, *SubmitRBFRequest) (*SubmitRBFResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitRBF not implemented")
+}
+func (UnimplementedWithdrawServiceServer) SubmitTopUp(context.Context, *SubmitTopUpRequest) (*SubmitTopUpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitTopUp not implemented")
 }
 func (UnimplementedWithdrawServiceServer) mustEmbedUnimplementedWithdrawServiceServer() {}
 func (UnimplementedWithdrawServiceServer) testEmbeddedByValue()                         {}
@@ -104,6 +120,24 @@ func _WithdrawService_SubmitRBF_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WithdrawService_SubmitTopUp_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitTopUpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WithdrawServiceServer).SubmitTopUp(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WithdrawService_SubmitTopUp_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WithdrawServiceServer).SubmitTopUp(ctx, req.(*SubmitTopUpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WithdrawService_ServiceDesc is the grpc.ServiceDesc for WithdrawService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -114,6 +148,10 @@ var WithdrawService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitRBF",
 			Handler:    _WithdrawService_SubmitRBF_Handler,
+		},
+		{
+			MethodName: "SubmitTopUp",
+			Handler:    _WithdrawService_SubmitTopUp_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

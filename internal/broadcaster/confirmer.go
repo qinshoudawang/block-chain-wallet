@@ -2,15 +2,20 @@ package broadcaster
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
 	"wallet-system/internal/broadcaster/chainclient"
 	"wallet-system/internal/helpers"
+	"wallet-system/internal/infra/redisx"
 	"wallet-system/internal/sequence/utxoreserve"
+	sweepmodel "wallet-system/internal/storage/model/sweep"
 	withdrawmodel "wallet-system/internal/storage/model/withdraw"
 	"wallet-system/internal/storage/repo"
 	withdrawpb "wallet-system/proto/withdraw"
+
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -25,41 +30,44 @@ type confirmThresholds struct {
 
 type Confirmer struct {
 	wr          *repo.WithdrawRepo
+	sr          *repo.SweepRepo
 	lr          *repo.LedgerRepo
 	clients     *chainclient.Registry
 	utxoReserve *utxoreserve.Manager
+	redis       *redis.Client
 	thresholds  confirmThresholds
 	rbfStuckFor time.Duration
+	lockTTL     time.Duration
 	withdrawRPC withdrawpb.WithdrawServiceClient
 }
 
-func NewConfirmer(
-	wr *repo.WithdrawRepo,
-	lr *repo.LedgerRepo,
-	clients *chainclient.Registry,
-	utxoReserve *utxoreserve.Manager,
-	withdrawRPC withdrawpb.WithdrawServiceClient,
-) *Confirmer {
+type ConfirmerDeps struct {
+	WithdrawRepo *repo.WithdrawRepo
+	SweepRepo    *repo.SweepRepo
+	LedgerRepo   *repo.LedgerRepo
+	Clients      *chainclient.Registry
+	UTXOReserve  *utxoreserve.Manager
+	Redis        *redis.Client
+	WithdrawRPC  withdrawpb.WithdrawServiceClient
+}
+
+func NewConfirmer(deps ConfirmerDeps) *Confirmer {
 	return &Confirmer{
-		wr:          wr,
-		lr:          lr,
-		clients:     clients,
-		utxoReserve: utxoReserve,
+		wr:          deps.WithdrawRepo,
+		sr:          deps.SweepRepo,
+		lr:          deps.LedgerRepo,
+		clients:     deps.Clients,
+		utxoReserve: deps.UTXOReserve,
+		redis:       deps.Redis,
 		thresholds:  loadConfirmThresholds(),
 		rbfStuckFor: loadRBFStuckThreshold(),
-		withdrawRPC: withdrawRPC,
+		lockTTL:     loadConfirmerLockTTL(),
+		withdrawRPC: deps.WithdrawRPC,
 	}
 }
 
-func RunConfirmer(
-	ctx context.Context,
-	wr *repo.WithdrawRepo,
-	lr *repo.LedgerRepo,
-	clients *chainclient.Registry,
-	utxoReserve *utxoreserve.Manager,
-	withdrawRPC withdrawpb.WithdrawServiceClient,
-) {
-	NewConfirmer(wr, lr, clients, utxoReserve, withdrawRPC).Run(ctx)
+func RunConfirmer(ctx context.Context, deps ConfirmerDeps) {
+	NewConfirmer(deps).Run(ctx)
 }
 
 func (c *Confirmer) Run(ctx context.Context) {
@@ -77,6 +85,26 @@ func (c *Confirmer) Run(ctx context.Context) {
 }
 
 func (c *Confirmer) tick(ctx context.Context) {
+	if c != nil && c.redis != nil {
+		ttl := c.lockTTL
+		if ttl <= 0 {
+			ttl = 20 * time.Second
+		}
+		unlock, err := redisx.Acquire(ctx, c.redis, "lock:broadcaster:confirmer", ttl)
+		if err != nil {
+			if errors.Is(err, redisx.ErrLockNotAcquired) {
+				return
+			}
+			log.Printf("[confirmer] acquire lock failed err=%v", err)
+			return
+		}
+		defer unlock()
+	}
+	c.confirmWithdraws(ctx)
+	c.confirmSweeps(ctx)
+}
+
+func (c *Confirmer) confirmWithdraws(ctx context.Context) {
 	items, err := c.wr.ListBroadcastedToConfirm(ctx, 200)
 	if err != nil {
 		log.Printf("[confirmer] list broadcasted failed err=%v", err)
@@ -89,6 +117,24 @@ func (c *Confirmer) tick(ctx context.Context) {
 	latestByChain := make(map[string]uint64)
 	for _, o := range items {
 		c.processOrder(ctx, latestByChain, o)
+	}
+}
+
+func (c *Confirmer) confirmSweeps(ctx context.Context) {
+	if c.sr == nil {
+		return
+	}
+	items, err := c.sr.ListBroadcastedToConfirm(ctx, 200)
+	if err != nil {
+		log.Printf("[confirmer] list sweep broadcasted failed err=%v", err)
+		return
+	}
+	if len(items) == 0 {
+		return
+	}
+	latestByChain := make(map[string]uint64)
+	for _, o := range items {
+		c.processSweep(ctx, latestByChain, o)
 	}
 }
 
@@ -209,6 +255,59 @@ func (c *Confirmer) confirmFinal(ctx context.Context, chain string, o withdrawmo
 	}
 }
 
+func (c *Confirmer) processSweep(ctx context.Context, latestByChain map[string]uint64, o sweepmodel.SweepOrder) {
+	chain, cli, err := c.clients.Resolve(o.Chain)
+	if err != nil {
+		log.Printf("[confirmer] resolve chain client failed sweep_id=%s chain=%s err=%v", o.SweepID, o.Chain, err)
+		return
+	}
+	threshold := c.thresholds.forChain(chain)
+	latest, ok := latestByChain[chain]
+	if !ok {
+		latest, err = cli.GetLatestHeight(ctx)
+		if err != nil {
+			log.Printf("[confirmer] get latest height failed chain=%s err=%v", chain, err)
+			return
+		}
+		latestByChain[chain] = latest
+	}
+	cf, err := cli.GetConfirmation(ctx, o.TxHash, o.Amount, o.AssetContractAddress, latest)
+	if err != nil {
+		log.Printf("[confirmer] get sweep confirmation failed sweep_id=%s tx_hash=%s chain=%s err=%v", o.SweepID, o.TxHash, chain, err)
+		return
+	}
+	if cf == nil {
+		return
+	}
+	if cf.Confirmations >= threshold {
+		if cf.Settlement == nil {
+			log.Printf("[confirmer] sweep settlement missing sweep_id=%s tx_hash=%s chain=%s", o.SweepID, o.TxHash, chain)
+			return
+		}
+		ok, err := c.sr.ConfirmWithSettlement(
+			ctx,
+			o.SweepID,
+			cf.BlockNumber,
+			cf.Confirmations,
+			threshold,
+			cf.Settlement.TransferAssetContractAddress,
+			cf.Settlement.TransferSpentAmount,
+		)
+		if err != nil || !ok {
+			log.Printf("[confirmer] sweep confirm settle skipped sweep_id=%s tx_hash=%s chain=%s ok=%v err=%v", o.SweepID, o.TxHash, chain, ok, err)
+			return
+		}
+		log.Printf("[confirmer] sweep confirmed sweep_id=%s tx_hash=%s chain=%s block=%d conf=%d threshold=%d",
+			o.SweepID, o.TxHash, chain, cf.BlockNumber, cf.Confirmations, threshold)
+		return
+	}
+	ok, err = c.sr.UpdateConfirmations(ctx, o.SweepID, cf.BlockNumber, cf.Confirmations, threshold)
+	if err != nil || !ok {
+		log.Printf("[confirmer] update sweep confirmations skipped sweep_id=%s tx_hash=%s chain=%s block=%d conf=%d ok=%v err=%v",
+			o.SweepID, o.TxHash, chain, cf.BlockNumber, cf.Confirmations, ok, err)
+	}
+}
+
 func loadConfirmThresholds() confirmThresholds {
 	return confirmThresholds{
 		evm: normalizeThreshold(helpers.ParseIntEnv("EVM_CONFIRM_THRESHOLD", 5), 5),
@@ -223,6 +322,14 @@ func loadRBFStuckThreshold() time.Duration {
 		return 0
 	}
 	return time.Duration(minutes) * time.Minute
+}
+
+func loadConfirmerLockTTL() time.Duration {
+	sec := helpers.ParseIntEnv("BROADCAST_CONFIRMER_LOCK_TTL_SEC", 20)
+	if sec <= 0 {
+		return 20 * time.Second
+	}
+	return time.Duration(sec) * time.Second
 }
 
 func (t confirmThresholds) forChain(chain string) int {

@@ -41,7 +41,7 @@ func main() {
 
 	cfg := deposit.EVMScannerConfig{
 		Chain:           evmProf.Chain,
-		TokenContracts:  parseCSVEnv("DEPOSIT_EVM_TOKEN_CONTRACTS"),
+		TokenContracts:  parseCSVEnv("EVM_TOKEN_CONTRACTS"),
 		Confirmations:   uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)),
 		PollInterval:    time.Duration(helpers.ParseIntEnv("DEPOSIT_EVM_POLL_SEC", 8)) * time.Second,
 		BatchBlocks:     uint64(helpers.ParseIntEnv("DEPOSIT_EVM_BATCH_BLOCKS", 200)),

@@ -30,7 +30,7 @@ type Service struct {
 	deriver    *derivation.Deriver
 }
 
-func NewService(rdb *redis.Client, providers *provider.Registry, authSecret []byte, mnemonic string) *Service {
+func NewService(rdb *redis.Client, providers *provider.Registry, authSecret []byte, mnemonic string, policyEngine *policy.PolicyEngine) *Service {
 	if providers == nil {
 		log.Fatal("signer provider registry is required")
 		return nil
@@ -43,7 +43,7 @@ func NewService(rdb *redis.Client, providers *provider.Registry, authSecret []by
 	return &Service{
 		rdb:        rdb,
 		guard:      idempotency.New(rdb, 30*time.Minute),
-		policy:     policy.NewPolicyEngine(),
+		policy:     policyEngine,
 		providers:  providers,
 		authSecret: authSecret,
 		deriver:    deriver,
@@ -69,7 +69,7 @@ func (s *Service) SignTransaction(ctx context.Context, req *signpb.SignRequest) 
 	if _, ok := amt.SetString(req.Amount, 10); !ok {
 		return nil, errors.New("invalid amount")
 	}
-	if err := s.policy.Validate(req.ToAddress, amt); err != nil {
+	if err := s.policy.Validate(ctx, req.GetChain(), req.GetToAddress(), amt); err != nil {
 		return nil, err
 	}
 
@@ -91,7 +91,7 @@ func (s *Service) SignTransaction(ctx context.Context, req *signpb.SignRequest) 
 	if err != nil {
 		return nil, err
 	}
-	signed, err := p.Sign(req.UnsignedTx)
+	signed, err := p.Sign(ctx, req)
 	if err != nil {
 		return nil, err
 	}

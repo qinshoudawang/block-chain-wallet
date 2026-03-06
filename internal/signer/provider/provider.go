@@ -1,7 +1,13 @@
 package provider
 
+import (
+	"context"
+
+	signpb "wallet-system/proto/signer"
+)
+
 type SignerProvider interface {
-	Sign(unsignedTx []byte) ([]byte, error)
+	Sign(ctx context.Context, req *signpb.SignRequest) ([]byte, error)
 }
 
 func trim0x(s string) string {

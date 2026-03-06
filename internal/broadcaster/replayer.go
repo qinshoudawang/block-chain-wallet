@@ -56,6 +56,7 @@ func (r *Replayer) tryReplay(ctx context.Context, o withdrawmodel.WithdrawOrder)
 	}
 
 	task := BroadcastTask{
+		TaskType:              TaskTypeWithdraw,
 		Version:               1,
 		WithdrawID:            o.WithdrawID,
 		RequestID:             o.RequestID,

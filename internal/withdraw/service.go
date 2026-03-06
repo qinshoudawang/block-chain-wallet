@@ -21,6 +21,7 @@ import (
 	withdrawmodel "wallet-system/internal/storage/model/withdraw"
 	storagerepo "wallet-system/internal/storage/repo"
 	"wallet-system/internal/withdraw/chainclient"
+	flowpkg "wallet-system/internal/withdraw/flow"
 	signpb "wallet-system/proto/signer"
 
 	"github.com/google/uuid"
@@ -64,6 +65,24 @@ type SequenceAllocation struct {
 	Unlock func()
 }
 
+type WithdrawInput struct {
+	Chain  string
+	To     string
+	Amount string // atomic-unit decimal
+	Token  string // optional token contract (EVM)
+}
+
+type SubmitRBFResult struct {
+	WithdrawID            string
+	RequestID             string
+	Status                string
+	OldFeeRateSatPerVbyte int64
+	NewFeeRateSatPerVbyte int64
+	OldFeeSat             int64
+	NewFeeSat             int64
+}
+
+// Lifecycle
 func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, producer *kafka.Producer) *Service {
 	if deps.Ledger == nil {
 		panic("ledger repo is required")
@@ -105,12 +124,78 @@ func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, 
 	}
 }
 
+// Public API
 func (s *Service) MatchRequestChain(chain string) (string, error) {
 	reqSpec, err := helpers.ResolveChainSpec(chain)
 	if err != nil {
 		return "", err
 	}
 	return reqSpec.CanonicalChain, nil
+}
+
+func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (task *broadcaster.BroadcastTask, err error) {
+	_, task, err = flowpkg.Run(ctx, flowpkg.CreateTemplate{
+		Input:              flowpkg.CreateInput{Chain: in.Chain, To: in.To, Amount: in.Amount, Token: in.Token},
+		CallerName:         "withdraw-api",
+		SkipPrecheck:       false,
+		InitFn:             s.initCreateFlowState,
+		BeforeSignFn:       s.beforeSignCreateFlow,
+		BuildTransactionFn: s.buildUnsignedCreateFlow,
+		PersistFn:          s.persistSignedCreateFlow,
+		BroadcastFn:        s.broadcastFlowTask,
+		OnErrorFn:          s.onErrorCreateFlow,
+	}, s.buildFlowRunnerDeps())
+	return task, err
+}
+
+// CreateAndSignSystemWithdraw creates a withdraw order without ledger freeze/risk steps.
+// It is used by internal system flows like token-gas topup.
+func (s *Service) CreateAndSignSystemWithdraw(ctx context.Context, in WithdrawInput, caller string) (task *broadcaster.BroadcastTask, err error) {
+	_, task, err = flowpkg.Run(ctx, flowpkg.CreateTemplate{
+		Input:              flowpkg.CreateInput{Chain: in.Chain, To: in.To, Amount: in.Amount, Token: in.Token},
+		CallerName:         "withdraw-system",
+		SkipPrecheck:       true,
+		InitFn:             s.initCreateFlowState,
+		BeforeSignFn:       s.beforeSignCreateFlow,
+		BuildTransactionFn: s.buildUnsignedCreateFlow,
+		PersistFn:          s.persistSignedCreateFlow,
+		BroadcastFn:        s.broadcastFlowTask,
+		OnErrorFn:          s.onErrorCreateFlow,
+	}, s.buildFlowRunnerDeps())
+	return task, err
+}
+
+func (s *Service) CreateAndSignRBFWithdraw(ctx context.Context, withdrawID string, oldTxHash string) (*SubmitRBFResult, error) {
+	if s == nil || s.deps.Withdraw == nil || s.deps.ChainClient == nil || s.deps.Signer == nil || len(s.authSecret) == 0 {
+		return nil, errors.New("withdraw service not configured for rbf")
+	}
+	st, task, err := flowpkg.Run(ctx, flowpkg.RBFTemplate{
+		WithdrawID:         withdrawID,
+		OldTxHash:          oldTxHash,
+		ValidateFn:         s.initRBFFlowState,
+		BuildTransactionFn: s.buildUnsignedRBFFlow,
+		PersistFn:          s.persistSignedRBFFlow,
+		BroadcastFn:        s.broadcastFlowTask,
+	}, s.buildFlowRunnerDeps())
+	if err != nil {
+		return nil, err
+	}
+	if task == nil {
+		return nil, errors.New("rbf task is nil")
+	}
+	if st == nil || st.RBFBuild == nil {
+		return nil, errors.New("rbf build result is missing")
+	}
+
+	return &SubmitRBFResult{
+		WithdrawID:            task.WithdrawID,
+		RequestID:             task.RequestID,
+		Status:                "RBF_ENQUEUED",
+		OldFeeRateSatPerVbyte: st.RBFBuild.OldFeeRate,
+		NewFeeRateSatPerVbyte: st.RBFBuild.NewFeeRate,
+		OldFeeSat:             st.RBFBuild.OldFee,
+		NewFeeSat:             st.RBFBuild.NewFee,
+	}, nil
 }
 
 func (s *Service) EnqueueBroadcastTask(ctx context.Context, canonicalChain string, task *broadcaster.BroadcastTask) error {
@@ -128,120 +213,44 @@ func (s *Service) EnqueueBroadcastTask(ctx context.Context, canonicalChain strin
 	return s.Producer.Publish(ctx, key, taskBytes)
 }
 
-type WithdrawInput struct {
-	Chain  string
-	To     string
-	Amount string // atomic-unit decimal
-	Token  string // optional token contract (EVM)
-}
-
-func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (task *broadcaster.BroadcastTask, err error) {
-	chain, profile, chainClient, err := s.resolveChainContext(in.Chain)
-	if err != nil {
-		return nil, err
-	}
-	fromAddr := profile.FromAddress
-	// 1) Validate chain-specific input and normalize address/amount/token metadata.
-	toAddr, amt, tokenContract, err := s.validateWithdrawInput(chain, in, chainClient)
-	if err != nil {
-		log.Printf("[withdraw-service] validate input failed chain=%s from=%s to=%s amount=%s err=%v", chain, fromAddr, in.To, in.Amount, err)
-		return nil, err
-	}
-	log.Printf("[withdraw-service] create/sign start chain=%s from=%s to=%s amount=%s token=%s", chain, fromAddr, in.To, in.Amount, tokenContract)
-
-	withdrawID := uuid.NewString()
-	requestID := uuid.NewString()
-	rt := s.chainRuntime(chain, profile, withdrawID, tokenContract)
-
-	// 2) Freeze ledger balance first and run risk approval before signing.
-	if err := s.freezeAndApprove(ctx, chain, profile, withdrawID, requestID, tokenContract, toAddr, in.Amount, amt); err != nil {
-		log.Printf("[withdraw-service] precheck failed chain=%s withdraw_id=%s request_id=%s err=%v", chain, withdrawID, requestID, err)
-		return nil, err
-	}
-	utxoReserved := false
-	defer func() {
-		if err == nil {
-			return
-		}
-		if utxoReserved && s.deps.UTXOReserve != nil {
-			if rerr := s.deps.UTXOReserve.ReleaseByWithdrawID(context.Background(), withdrawID); rerr != nil {
-				log.Printf("[withdraw-service] release utxo reservation failed chain=%s withdraw_id=%s err=%v", chain, withdrawID, rerr)
+// Flow assembly
+func (s *Service) buildFlowRunnerDeps() flowpkg.RunnerDeps {
+	return flowpkg.RunnerDeps{
+		SignFn: func(ctx context.Context, st *flowpkg.State, caller string) ([]byte, error) {
+			resp, err := s.signWithdraw(
+				ctx,
+				st.Chain,
+				st.FromAddr,
+				st.WithdrawID,
+				st.RequestID,
+				st.ToAddr,
+				st.AmountText,
+				st.UnsignedTx,
+				caller,
+			)
+			if err != nil {
+				return nil, err
 			}
-		}
-		if rerr := s.releaseFrozenOnError(context.Background(), withdrawID); rerr != nil {
-			log.Printf("[withdraw-service] release freeze failed chain=%s withdraw_id=%s err=%v", chain, withdrawID, rerr)
-		}
-	}()
-
-	// 3) Allocate sequence for chains that need ordered issuance.
-	sequenceAlloc, err := s.allocateSequence(ctx, &rt, chainClient)
-	if err != nil {
-		return nil, err
+			return resp.SignedTx, nil
+		},
+		ReleaseUTXOFn: func(ctx context.Context, withdrawID string) error {
+			if s.deps.UTXOReserve == nil {
+				return nil
+			}
+			return s.deps.UTXOReserve.ReleaseByWithdrawID(ctx, withdrawID)
+		},
 	}
-	if sequenceAlloc.Unlock != nil {
-		defer sequenceAlloc.Unlock()
-	}
-	logSequence := sequenceForLog(sequenceAlloc.Value)
-
-	// 4) Build chain-specific unsigned transaction payload.
-	var unsignedTx []byte
-	unsignedTx, utxoReserved, err = s.prepareUnsignedTx(
-		ctx,
-		chainClient,
-		rt,
-		toAddr,
-		amt,
-		sequenceAlloc.Value,
-	)
-	if err != nil {
-		log.Printf("[withdraw-service] build unsigned tx failed chain=%s from=%s to=%s sequence=%s err=%v", chain, fromAddr, toAddr, logSequence, err)
-		return nil, err
-	}
-
-	// 5) Request signer service to sign the payload.
-	sresp, err := s.signWithdraw(ctx, chain, profile, withdrawID, requestID, toAddr, in.Amount, unsignedTx)
-	if err != nil {
-		log.Printf("[withdraw-service] sign withdraw failed chain=%s withdraw_id=%s request_id=%s sequence=%s err=%v", chain, withdrawID, requestID, logSequence, err)
-		return nil, err
-	}
-	log.Printf("[withdraw-service] sign withdraw success chain=%s withdraw_id=%s request_id=%s sequence=%s signed_size=%d", chain, withdrawID, requestID, logSequence, len(sresp.SignedTx))
-
-	// 6) Persist signed order and return task for broadcaster enqueue.
-	signedPayload, signedPayloadEncoding, err := s.insertSignedOrder(
-		ctx,
-		chain,
-		profile,
-		withdrawID,
-		requestID,
-		toAddr,
-		in.Amount,
-		sequenceAlloc.Value,
-		sresp.SignedTx,
-		tokenContract,
-	)
-	if err != nil {
-		log.Printf("[withdraw-service] insert signed order failed chain=%s withdraw_id=%s request_id=%s sequence=%s err=%v", chain, withdrawID, requestID, logSequence, err)
-		return nil, err
-	}
-	log.Printf("[withdraw-service] insert signed order success chain=%s withdraw_id=%s request_id=%s sequence=%s", chain, withdrawID, requestID, logSequence)
-
-	return &broadcaster.BroadcastTask{
-		Version:               1,
-		WithdrawID:            withdrawID,
-		RequestID:             requestID,
-		Chain:                 chain,
-		From:                  fromAddr,
-		To:                    toAddr,
-		Amount:                in.Amount,
-		Sequence:              sequenceAlloc.Value,
-		SignedPayload:         signedPayload,
-		SignedPayloadEncoding: signedPayloadEncoding,
-		TokenContractAddress:  tokenContract,
-		CreatedAt:             time.Now().Unix(),
-		Attempt:               0,
-	}, nil
 }
 
+func (s *Service) broadcastFlowTask(ctx context.Context, st *flowpkg.State, task *broadcaster.BroadcastTask) error {
+	_ = st
+	if task == nil {
+		return errors.New("broadcast task is nil")
+	}
+	return s.EnqueueBroadcastTask(ctx, task.Chain, task)
+}
+
+// Domain helpers
 func (s *Service) validateWithdrawInput(
 	chain string,
 	in WithdrawInput,
@@ -291,37 +300,15 @@ func (s *Service) freezeAndApprove(
 	})
 }
 
-type freezePlan struct {
-	assetContractAddress string
-	amount               *big.Int
-}
-
-func buildFreezePlans(tokenContractAddress string, transferAmount *big.Int, feeReserve *big.Int) ([]freezePlan, error) {
-	tokenContractAddress = strings.TrimSpace(tokenContractAddress)
-	if tokenContractAddress == "" {
-		freezeAmount := new(big.Int).Set(transferAmount)
-		if feeReserve != nil && feeReserve.Sign() > 0 {
-			freezeAmount.Add(freezeAmount, feeReserve)
-		}
-		return []freezePlan{{assetContractAddress: "", amount: freezeAmount}}, nil
-	}
-	if feeReserve == nil || feeReserve.Sign() <= 0 {
-		return nil, errors.New("freeze reserve is required for token withdraw")
-	}
-	return []freezePlan{
-		{assetContractAddress: tokenContractAddress, amount: new(big.Int).Set(transferAmount)},
-		{assetContractAddress: "", amount: new(big.Int).Set(feeReserve)},
-	}, nil
-}
-
 func (s *Service) releaseFrozenOnError(ctx context.Context, withdrawID string) error {
 	return s.deps.Ledger.ReleaseWithdrawFreeze(ctx, withdrawID)
 }
 
+// Persistence and encoding
 func (s *Service) insertSignedOrder(
 	ctx context.Context,
 	chain string,
-	profile ChainProfile,
+	fromAddr string,
 	withdrawID string,
 	requestID string,
 	toAddr string,
@@ -349,7 +336,7 @@ func (s *Service) insertSignedOrder(
 		WithdrawID:            withdrawID,
 		RequestID:             requestID,
 		Chain:                 chain,
-		FromAddr:              profile.FromAddress,
+		FromAddr:              fromAddr,
 		ToAddr:                toAddr,
 		Amount:                amount,
 		Sequence:              sequence,
@@ -363,6 +350,29 @@ func (s *Service) insertSignedOrder(
 	return signedPayload, signedPayloadEncoding, nil
 }
 
+func expectedSignedPayloadEncodingForFamily(family string) (string, error) {
+	switch family {
+	case helpers.FamilyBTC, helpers.FamilyEVM:
+		return broadcaster.SignedPayloadEncodingHex, nil
+	case helpers.FamilySOL:
+		return broadcaster.SignedPayloadEncodingBase64, nil
+	default:
+		return "", errors.New("unsupported chain family for signed payload encoding")
+	}
+}
+
+func encodeSignedPayloadByFamily(family string, signedTx []byte) (string, string, error) {
+	switch family {
+	case helpers.FamilyBTC, helpers.FamilyEVM:
+		return hex.EncodeToString(signedTx), broadcaster.SignedPayloadEncodingHex, nil
+	case helpers.FamilySOL:
+		return base64.StdEncoding.EncodeToString(signedTx), broadcaster.SignedPayloadEncodingBase64, nil
+	default:
+		return "", "", errors.New("unsupported chain family for signed payload encoding")
+	}
+}
+
+// Chain runtime and sequencing
 func (s *Service) chainRuntime(chain string, profile ChainProfile, withdrawID string, tokenContract string) chainclient.Runtime {
 	return chainclient.Runtime{
 		Chain:            chain,
@@ -437,23 +447,25 @@ func (s *Service) withSequenceLock(
 	}, nil
 }
 
+// Signer and chain context
 func (s *Service) signWithdraw(
 	ctx context.Context,
 	chain string,
-	profile ChainProfile,
+	fromAddr string,
 	withdrawID string,
 	requestID string,
 	toAddr string,
 	amount string,
 	unsignedTx []byte,
+	caller string,
 ) (*signpb.SignResponse, error) {
-	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", chain, withdrawID, requestID, profile.FromAddress, toAddr, amount, len(unsignedTx))
+	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", chain, withdrawID, requestID, fromAddr, toAddr, amount, len(unsignedTx))
 
 	authToken := auth.MakeToken(s.authSecret, auth.TxPayload{
 		WithdrawID: withdrawID,
 		RequestID:  requestID,
 		Chain:      chain,
-		From:       profile.FromAddress,
+		From:       fromAddr,
 		To:         toAddr,
 		Amount:     amount,
 		UnsignedTx: unsignedTx,
@@ -466,12 +478,12 @@ func (s *Service) signWithdraw(
 		RequestId:   requestID,
 		WithdrawId:  withdrawID,
 		Chain:       chain,
-		FromAddress: profile.FromAddress,
+		FromAddress: fromAddr,
 		ToAddress:   toAddr,
 		Amount:      amount,
 		UnsignedTx:  unsignedTx,
 		AuthToken:   authToken,
-		Caller:      "withdraw-api",
+		Caller:      caller,
 	})
 	if err != nil {
 		log.Printf("[withdraw-service] signer rpc failed chain=%s withdraw_id=%s request_id=%s err=%v", chain, withdrawID, requestID, err)
@@ -479,14 +491,6 @@ func (s *Service) signWithdraw(
 	}
 	log.Printf("[withdraw-service] signer rpc success chain=%s withdraw_id=%s request_id=%s signed_size=%d", chain, withdrawID, requestID, len(resp.SignedTx))
 	return resp, nil
-}
-
-func sequenceForLog(v uint64) string {
-	return big.NewInt(0).SetUint64(v).String()
-}
-
-func lockKeyForSequence(chain string, fromAddr string) string {
-	return "lock:sequence:" + chain + ":" + strings.ToLower(strings.TrimSpace(fromAddr))
 }
 
 func (s *Service) resolveChainContext(chain string) (string, ChainProfile, chainclient.Client, error) {
@@ -503,4 +507,44 @@ func (s *Service) resolveChainContext(chain string) (string, ChainProfile, chain
 		return "", ChainProfile{}, nil, err
 	}
 	return spec.CanonicalChain, profile, cli, nil
+}
+
+// Small helpers
+func buildFreezePlans(tokenContractAddress string, transferAmount *big.Int, feeReserve *big.Int) ([]freezePlan, error) {
+	tokenContractAddress = strings.TrimSpace(tokenContractAddress)
+	if tokenContractAddress == "" {
+		freezeAmount := new(big.Int).Set(transferAmount)
+		if feeReserve != nil && feeReserve.Sign() > 0 {
+			freezeAmount.Add(freezeAmount, feeReserve)
+		}
+		return []freezePlan{{assetContractAddress: "", amount: freezeAmount}}, nil
+	}
+	if feeReserve == nil || feeReserve.Sign() <= 0 {
+		return nil, errors.New("freeze reserve is required for token withdraw")
+	}
+	return []freezePlan{
+		{assetContractAddress: tokenContractAddress, amount: new(big.Int).Set(transferAmount)},
+		{assetContractAddress: "", amount: new(big.Int).Set(feeReserve)},
+	}, nil
+}
+
+type freezePlan struct {
+	assetContractAddress string
+	amount               *big.Int
+}
+
+func sequenceForLog(v uint64) string {
+	return big.NewInt(0).SetUint64(v).String()
+}
+
+func buildRequestID(caller string) string {
+	caller = strings.TrimSpace(caller)
+	if caller == "" {
+		return uuid.NewString()
+	}
+	return caller + ":" + uuid.NewString()
+}
+
+func lockKeyForSequence(chain string, fromAddr string) string {
+	return "lock:sequence:" + chain + ":" + strings.ToLower(strings.TrimSpace(fromAddr))
 }

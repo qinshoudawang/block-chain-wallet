@@ -1,6 +1,7 @@
 package derivation
 
 import (
+	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha512"
@@ -67,6 +68,27 @@ func (d *Deriver) deriveEVM(index uint32, spec helpers.ChainSpec) (string, error
 		return "", err
 	}
 	return account.Address.Hex(), nil
+}
+
+func (d *Deriver) DeriveEVMPrivateKey(chain string, index uint32) (*ecdsa.PrivateKey, string, error) {
+	spec, err := helpers.ResolveChainSpec(chain)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %s", ErrUnsupportedChain, chain)
+	}
+	if spec.Family != helpers.FamilyEVM {
+		return nil, "", fmt.Errorf("%w: %s", ErrUnsupportedChain, chain)
+	}
+	path := fmt.Sprintf(spec.PathFmt, index)
+	dp := hdwallet.MustParseDerivationPath(path)
+	account, err := d.evm.Derive(dp, false)
+	if err != nil {
+		return nil, "", err
+	}
+	priv, err := d.evm.PrivateKey(account)
+	if err != nil {
+		return nil, "", err
+	}
+	return priv, account.Address.Hex(), nil
 }
 
 // deriveBTC returns a native segwit (P2WPKH) address using BIP84:
