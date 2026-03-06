@@ -1,22 +1,29 @@
 package handler
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 
 	"wallet-system/internal/api/dto"
+	"wallet-system/internal/broadcaster"
 	"wallet-system/internal/withdraw"
 
 	"github.com/gin-gonic/gin"
 )
 
-type WithdrawHandler struct {
-	svc *withdraw.Service
+type WithdrawService interface {
+	MatchRequestChain(chain string) (string, error)
+	CreateAndSignWithdraw(ctx context.Context, in withdraw.WithdrawInput) (*broadcaster.BroadcastTask, error)
+	EnqueueBroadcastTask(ctx context.Context, canonicalChain string, task *broadcaster.BroadcastTask) error
 }
 
-func NewWithdrawHandler(svc *withdraw.Service) *WithdrawHandler {
+type WithdrawHandler struct {
+	svc WithdrawService
+}
+
+func NewWithdrawHandler(svc WithdrawService) *WithdrawHandler {
 	return &WithdrawHandler{svc: svc}
 }
 
@@ -54,20 +61,14 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 	log.Printf("[withdraw-handler] create/sign success withdraw_id=%s request_id=%s sequence=%s", resp.WithdrawID, resp.RequestID, sequenceForLog(resp.Sequence))
 
 	// 异步广播
-	key := canonicalChain + ":" + resp.From
-	taskBytes, err := json.Marshal(resp)
+	err = h.svc.EnqueueBroadcastTask(c.Request.Context(), canonicalChain, resp)
 	if err != nil {
-		log.Printf("[withdraw-handler] marshal task failed withdraw_id=%s request_id=%s err=%v", resp.WithdrawID, resp.RequestID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	err = h.svc.Producer.Publish(c.Request.Context(), key, taskBytes)
-	if err != nil {
+		key := canonicalChain + ":" + resp.From
 		log.Printf("[withdraw-handler] publish failed withdraw_id=%s request_id=%s key=%s err=%v", resp.WithdrawID, resp.RequestID, key, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	log.Printf("[withdraw-handler] publish success withdraw_id=%s request_id=%s key=%s", resp.WithdrawID, resp.RequestID, key)
+	log.Printf("[withdraw-handler] publish success withdraw_id=%s request_id=%s key=%s", resp.WithdrawID, resp.RequestID, canonicalChain+":"+resp.From)
 
 	c.JSON(http.StatusOK, dto.WithdrawResponse{
 		WithdrawID: resp.WithdrawID,

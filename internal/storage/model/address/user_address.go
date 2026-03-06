@@ -1,4 +1,4 @@
-package model
+package addressmodel
 
 import "time"
 

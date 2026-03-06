@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"time"
 
-	"wallet-system/internal/storage/model"
+	withdrawmodel "wallet-system/internal/storage/model/withdraw"
 
 	"gorm.io/gorm"
 )
@@ -20,8 +20,8 @@ func NewWithdrawRepo(db *gorm.DB) *WithdrawRepo {
 	return &WithdrawRepo{db: db}
 }
 
-func (r *WithdrawRepo) GetByWithdrawID(ctx context.Context, withdrawID string) (*model.WithdrawOrder, error) {
-	var out model.WithdrawOrder
+func (r *WithdrawRepo) GetByWithdrawID(ctx context.Context, withdrawID string) (*withdrawmodel.WithdrawOrder, error) {
+	var out withdrawmodel.WithdrawOrder
 	if err := r.db.WithContext(ctx).
 		Where("withdraw_id = ?", withdrawID).
 		First(&out).Error; err != nil {
@@ -31,8 +31,8 @@ func (r *WithdrawRepo) GetByWithdrawID(ctx context.Context, withdrawID string) (
 }
 
 // InsertSigned: withdraw-api 在签名成功后落库 SIGNED，然后再投 Kafka
-func (r *WithdrawRepo) InsertSigned(ctx context.Context, o *model.WithdrawOrder) error {
-	o.Status = model.StatusSIGNED
+func (r *WithdrawRepo) InsertSigned(ctx context.Context, o *withdrawmodel.WithdrawOrder) error {
+	o.Status = withdrawmodel.StatusSIGNED
 	return r.db.WithContext(ctx).Create(o).Error
 }
 
@@ -44,7 +44,7 @@ func (r *WithdrawRepo) NextSequenceFloor(ctx context.Context, chain, fromAddr st
 	}
 	var maxSequence sql.NullInt64
 	row := r.db.WithContext(ctx).
-		Model(&model.WithdrawOrder{}).
+		Model(&withdrawmodel.WithdrawOrder{}).
 		Where("chain = ? AND from_addr = ?", chain, fromAddr).
 		Select("MAX(sequence)").
 		Row()
@@ -63,12 +63,12 @@ func (r *WithdrawRepo) NextSequenceFloor(ctx context.Context, chain, fromAddr st
 // MarkBroadcasted: broadcaster 广播成功后调用（幂等）
 // 只允许 SIGNED/BROADCASTING -> BROADCASTED
 func (r *WithdrawRepo) MarkBroadcasted(ctx context.Context, withdrawID, txHash string) (bool, error) {
-	res := r.db.WithContext(ctx).Model(&model.WithdrawOrder{}).
-		Where("withdraw_id = ? AND status IN ?", withdrawID, []model.WithdrawStatus{
-			model.StatusSIGNED, model.StatusBROADCASTING, model.StatusBROADCASTED,
+	res := r.db.WithContext(ctx).Model(&withdrawmodel.WithdrawOrder{}).
+		Where("withdraw_id = ? AND status IN ?", withdrawID, []withdrawmodel.WithdrawStatus{
+			withdrawmodel.StatusSIGNED, withdrawmodel.StatusBROADCASTING, withdrawmodel.StatusBROADCASTED,
 		}).
 		Updates(map[string]any{
-			"status":        model.StatusBROADCASTED,
+			"status":        withdrawmodel.StatusBROADCASTED,
 			"tx_hash":       txHash,
 			"last_error":    "",
 			"next_retry_at": nil,
@@ -79,10 +79,10 @@ func (r *WithdrawRepo) MarkBroadcasted(ctx context.Context, withdrawID, txHash s
 // MarkRetry: broadcaster 广播失败（可重试）
 // 只允许 SIGNED/BROADCASTING 状态更新，避免已终态被回滚
 func (r *WithdrawRepo) MarkRetry(ctx context.Context, withdrawID string, next time.Time, lastErr string) (bool, error) {
-	res := r.db.WithContext(ctx).Model(&model.WithdrawOrder{}).
-		Where("withdraw_id = ? AND status IN ?", withdrawID, []model.WithdrawStatus{model.StatusSIGNED, model.StatusBROADCASTING}).
+	res := r.db.WithContext(ctx).Model(&withdrawmodel.WithdrawOrder{}).
+		Where("withdraw_id = ? AND status IN ?", withdrawID, []withdrawmodel.WithdrawStatus{withdrawmodel.StatusSIGNED, withdrawmodel.StatusBROADCASTING}).
 		Updates(map[string]any{
-			"status":        model.StatusBROADCASTING,
+			"status":        withdrawmodel.StatusBROADCASTING,
 			"retry_count":   gorm.Expr("retry_count + 1"),
 			"next_retry_at": next,
 			"last_error":    lastErr,
@@ -92,22 +92,22 @@ func (r *WithdrawRepo) MarkRetry(ctx context.Context, withdrawID string, next ti
 
 // MarkFailed: 达到最大重试或不可重试错误
 func (r *WithdrawRepo) MarkFailed(ctx context.Context, withdrawID string, lastErr string) (bool, error) {
-	res := r.db.WithContext(ctx).Model(&model.WithdrawOrder{}).
-		Where("withdraw_id = ? AND status IN ?", withdrawID, []model.WithdrawStatus{
-			model.StatusSIGNED, model.StatusBROADCASTING, model.StatusBROADCASTED,
+	res := r.db.WithContext(ctx).Model(&withdrawmodel.WithdrawOrder{}).
+		Where("withdraw_id = ? AND status IN ?", withdrawID, []withdrawmodel.WithdrawStatus{
+			withdrawmodel.StatusSIGNED, withdrawmodel.StatusBROADCASTING, withdrawmodel.StatusBROADCASTED,
 		}).
 		Updates(map[string]any{
-			"status":     model.StatusFAILED,
+			"status":     withdrawmodel.StatusFAILED,
 			"last_error": lastErr,
 		})
 	return res.RowsAffected > 0, res.Error
 }
 
 // GetForReplay: replayer 扫描到点要重投的订单
-func (r *WithdrawRepo) ListDueRetries(ctx context.Context, limit int) ([]model.WithdrawOrder, error) {
-	var out []model.WithdrawOrder
+func (r *WithdrawRepo) ListDueRetries(ctx context.Context, limit int) ([]withdrawmodel.WithdrawOrder, error) {
+	var out []withdrawmodel.WithdrawOrder
 	err := r.db.WithContext(ctx).
-		Where("status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", model.StatusBROADCASTING, time.Now()).
+		Where("status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?", withdrawmodel.StatusBROADCASTING, time.Now()).
 		Order("next_retry_at ASC").
 		Limit(limit).
 		Find(&out).Error
@@ -118,18 +118,18 @@ func (r *WithdrawRepo) ListDueRetries(ctx context.Context, limit int) ([]model.W
 // 简化做法：把 next_retry_at 往后推一小段，作为“占位”
 func (r *WithdrawRepo) MarkReplayScheduled(ctx context.Context, withdrawID string, bump time.Duration) (bool, error) {
 	next := time.Now().Add(bump)
-	res := r.db.WithContext(ctx).Model(&model.WithdrawOrder{}).
+	res := r.db.WithContext(ctx).Model(&withdrawmodel.WithdrawOrder{}).
 		Where("withdraw_id = ? AND status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?",
-			withdrawID, model.StatusBROADCASTING, time.Now()).
+			withdrawID, withdrawmodel.StatusBROADCASTING, time.Now()).
 		Update("next_retry_at", next)
 	return res.RowsAffected > 0, res.Error
 }
 
 // Confirm 扫描：取 BROADCASTED 的订单
-func (r *WithdrawRepo) ListBroadcastedToConfirm(ctx context.Context, limit int) ([]model.WithdrawOrder, error) {
-	var out []model.WithdrawOrder
+func (r *WithdrawRepo) ListBroadcastedToConfirm(ctx context.Context, limit int) ([]withdrawmodel.WithdrawOrder, error) {
+	var out []withdrawmodel.WithdrawOrder
 	err := r.db.WithContext(ctx).
-		Where("status = ? AND tx_hash <> ''", model.StatusBROADCASTED).
+		Where("status = ? AND tx_hash <> ''", withdrawmodel.StatusBROADCASTED).
 		Order("updated_at ASC").
 		Limit(limit).
 		Find(&out).Error
@@ -150,11 +150,11 @@ func (r *WithdrawRepo) updateConfirmationsWithDB(db *gorm.DB, withdrawID string,
 	// 达标则确认
 	if conf >= threshold {
 		now := time.Now()
-		updates["status"] = model.StatusCONFIRMED
+		updates["status"] = withdrawmodel.StatusCONFIRMED
 		updates["confirmed_at"] = &now
 	}
-	res := db.Model(&model.WithdrawOrder{}).
-		Where("withdraw_id = ? AND status = ?", withdrawID, model.StatusBROADCASTED).
+	res := db.Model(&withdrawmodel.WithdrawOrder{}).
+		Where("withdraw_id = ? AND status = ?", withdrawID, withdrawmodel.StatusBROADCASTED).
 		Updates(updates)
 	return res.RowsAffected > 0, res.Error
 }
@@ -190,7 +190,7 @@ func (r *WithdrawRepo) saveSettlementWithDB(
 	if actualSpentAmount != nil {
 		updates["actual_spent_amount"] = actualSpentAmount.String()
 	}
-	res := db.Model(&model.WithdrawOrder{}).
+	res := db.Model(&withdrawmodel.WithdrawOrder{}).
 		Where("withdraw_id = ?", withdrawID).
 		Updates(updates)
 	return res.RowsAffected > 0, res.Error
@@ -267,8 +267,8 @@ func (r *WithdrawRepo) ReplaceBroadcastedSignedTx(
 	newSignedPayload string,
 	newTxHash string,
 ) (bool, error) {
-	res := r.db.WithContext(ctx).Model(&model.WithdrawOrder{}).
-		Where("withdraw_id = ? AND tx_hash = ? AND status = ?", withdrawID, prevTxHash, model.StatusBROADCASTED).
+	res := r.db.WithContext(ctx).Model(&withdrawmodel.WithdrawOrder{}).
+		Where("withdraw_id = ? AND tx_hash = ? AND status = ?", withdrawID, prevTxHash, withdrawmodel.StatusBROADCASTED).
 		Updates(map[string]any{
 			"signed_payload":          newSignedPayload,
 			"signed_payload_encoding": "hex",
@@ -287,8 +287,8 @@ func (r *WithdrawRepo) SaveRBFSignedPayload(
 	newSignedPayload string,
 	encoding string,
 ) (bool, error) {
-	res := r.db.WithContext(ctx).Model(&model.WithdrawOrder{}).
-		Where("withdraw_id = ? AND tx_hash = ? AND status = ?", withdrawID, prevTxHash, model.StatusBROADCASTED).
+	res := r.db.WithContext(ctx).Model(&withdrawmodel.WithdrawOrder{}).
+		Where("withdraw_id = ? AND tx_hash = ? AND status = ?", withdrawID, prevTxHash, withdrawmodel.StatusBROADCASTED).
 		Updates(map[string]any{
 			"signed_payload":          newSignedPayload,
 			"signed_payload_encoding": encoding,

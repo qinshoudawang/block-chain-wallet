@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"wallet-system/internal/helpers"
-	"wallet-system/internal/storage/model"
+	addressmodel "wallet-system/internal/storage/model/address"
 	"wallet-system/internal/storage/repo"
 	signpb "wallet-system/proto/signer"
 
@@ -26,7 +26,7 @@ func NewAddressService(db *gorm.DB, signerClient signpb.SignerServiceClient) *Ad
 	}
 }
 
-func (s *AddressService) CreateUserAddress(ctx context.Context, userID string, chain string) (*model.UserAddress, error) {
+func (s *AddressService) CreateUserAddress(ctx context.Context, userID string, chain string) (*addressmodel.UserAddress, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, errors.New("userID is required")
 	}
@@ -35,7 +35,7 @@ func (s *AddressService) CreateUserAddress(ctx context.Context, userID string, c
 		return nil, err
 	}
 
-	var out *model.UserAddress
+	var out *addressmodel.UserAddress
 	err = s.repo.InTx(ctx, func(tx *gorm.DB) error {
 		wallet, index, err := s.repo.AllocateIndexTx(tx, spec)
 		if err != nil {
@@ -50,7 +50,7 @@ func (s *AddressService) CreateUserAddress(ctx context.Context, userID string, c
 			return err
 		}
 
-		addr := &model.UserAddress{
+		addr := &addressmodel.UserAddress{
 			UserID:         userID,
 			Chain:          spec.CanonicalChain,
 			Address:        resp.Address,

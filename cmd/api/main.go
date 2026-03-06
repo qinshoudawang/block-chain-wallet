@@ -38,7 +38,7 @@ import (
 )
 
 func init() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	helpers.InitServiceLogger("api")
 }
 
 func main() {

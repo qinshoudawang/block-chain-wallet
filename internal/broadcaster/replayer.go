@@ -7,7 +7,7 @@ import (
 
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
-	"wallet-system/internal/storage/model"
+	withdrawmodel "wallet-system/internal/storage/model/withdraw"
 	"wallet-system/internal/storage/repo"
 )
 
@@ -48,7 +48,7 @@ func (r *Replayer) tick(ctx context.Context) {
 	}
 }
 
-func (r *Replayer) tryReplay(ctx context.Context, o model.WithdrawOrder) {
+func (r *Replayer) tryReplay(ctx context.Context, o withdrawmodel.WithdrawOrder) {
 	// Occupy first to reduce duplicate delivery across replayers.
 	ok, _ := r.wr.MarkReplayScheduled(ctx, o.WithdrawID, 30*time.Second)
 	if !ok {

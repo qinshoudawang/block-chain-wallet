@@ -1,4 +1,4 @@
-package model
+package withdrawmodel
 
 import "time"
 

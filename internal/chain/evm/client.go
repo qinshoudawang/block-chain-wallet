@@ -4,9 +4,11 @@ import (
 	"context"
 	"math/big"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/event"
 )
 
 type Client struct {
@@ -59,6 +61,20 @@ func (c *Client) HeaderByNumber(ctx context.Context, number *big.Int) (*types.He
 		return nil, ErrClientNotConfigured
 	}
 	return c.cli.HeaderByNumber(ctx, number)
+}
+
+func (c *Client) FilterLogs(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
+	if c == nil || c.cli == nil {
+		return nil, ErrClientNotConfigured
+	}
+	return c.cli.FilterLogs(ctx, q)
+}
+
+func (c *Client) SubscribeFilterLogs(ctx context.Context, q ethereum.FilterQuery, ch chan<- types.Log) (event.Subscription, error) {
+	if c == nil || c.cli == nil {
+		return nil, ErrClientNotConfigured
+	}
+	return c.cli.SubscribeFilterLogs(ctx, q, ch)
 }
 
 func (c *Client) SuggestDynamicFeeCaps(ctx context.Context) (*big.Int, *big.Int, error) {

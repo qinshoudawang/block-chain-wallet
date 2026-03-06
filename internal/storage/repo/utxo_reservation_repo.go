@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"wallet-system/internal/storage/model"
+	utxomodel "wallet-system/internal/storage/model/utxo"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -27,14 +27,14 @@ func (r *UTXOReservationRepo) UpsertReserved(ctx context.Context, chain, address
 		return nil
 	}
 	now := time.Now()
-	rows := make([]model.UTXOReservation, 0, len(utxoKeys))
+	rows := make([]utxomodel.UTXOReservation, 0, len(utxoKeys))
 	for _, key := range utxoKeys {
-		rows = append(rows, model.UTXOReservation{
+		rows = append(rows, utxomodel.UTXOReservation{
 			WithdrawID: withdrawID,
 			Chain:      chain,
 			Address:    address,
 			UTXOKey:    key,
-			Status:     model.UTXOReservationReserved,
+			Status:     utxomodel.UTXOReservationReserved,
 			ReservedAt: now,
 			ReleasedAt: nil,
 		})
@@ -48,7 +48,7 @@ func (r *UTXOReservationRepo) UpsertReserved(ctx context.Context, chain, address
 			DoUpdates: clause.Assignments(map[string]any{
 				"chain":       chain,
 				"address":     address,
-				"status":      model.UTXOReservationReserved,
+				"status":      utxomodel.UTXOReservationReserved,
 				"reserved_at": now,
 				"released_at": nil,
 				"updated_at":  now,
@@ -63,10 +63,10 @@ func (r *UTXOReservationRepo) ReleaseByWithdrawID(ctx context.Context, withdrawI
 	}
 	now := time.Now()
 	return r.db.WithContext(ctx).
-		Model(&model.UTXOReservation{}).
-		Where("withdraw_id = ? AND status = ?", withdrawID, model.UTXOReservationReserved).
+		Model(&utxomodel.UTXOReservation{}).
+		Where("withdraw_id = ? AND status = ?", withdrawID, utxomodel.UTXOReservationReserved).
 		Updates(map[string]any{
-			"status":      model.UTXOReservationReleased,
+			"status":      utxomodel.UTXOReservationReleased,
 			"released_at": &now,
 			"updated_at":  now,
 		}).Error
@@ -87,14 +87,14 @@ func (r *UTXOReservationRepo) ListReservedKeysByAccount(ctx context.Context, cha
 	return keys, nil
 }
 
-func (r *UTXOReservationRepo) ListReservedByAccount(ctx context.Context, chain, address string) ([]model.UTXOReservation, error) {
+func (r *UTXOReservationRepo) ListReservedByAccount(ctx context.Context, chain, address string) ([]utxomodel.UTXOReservation, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("utxo reservation repo not configured")
 	}
-	var out []model.UTXOReservation
+	var out []utxomodel.UTXOReservation
 	err := r.db.WithContext(ctx).
-		Model(&model.UTXOReservation{}).
-		Where("chain = ? AND address = ? AND status = ?", chain, address, model.UTXOReservationReserved).
+		Model(&utxomodel.UTXOReservation{}).
+		Where("chain = ? AND address = ? AND status = ?", chain, address, utxomodel.UTXOReservationReserved).
 		Select("withdraw_id", "utxo_key").
 		Find(&out).Error
 	return out, err

@@ -45,7 +45,7 @@ func (s *grpcServer) DeriveAddress(ctx context.Context, req *signpb.DeriveAddres
 }
 
 func init() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	helpers.InitServiceLogger("signer")
 }
 
 func main() {

@@ -3,8 +3,9 @@ package repo
 import (
 	"context"
 	"errors"
+	"strings"
 	"wallet-system/internal/helpers"
-	"wallet-system/internal/storage/model"
+	addressmodel "wallet-system/internal/storage/model/address"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -25,12 +26,12 @@ func (r *AddressRepo) InTx(ctx context.Context, fn func(tx *gorm.DB) error) erro
 	return r.db.WithContext(ctx).Transaction(fn)
 }
 
-func (r *AddressRepo) CreateUserAddressTx(tx *gorm.DB, addr *model.UserAddress) error {
+func (r *AddressRepo) CreateUserAddressTx(tx *gorm.DB, addr *addressmodel.UserAddress) error {
 	return tx.Create(addr).Error
 }
 
-func (r *AddressRepo) AllocateIndexTx(tx *gorm.DB, spec helpers.ChainSpec) (*model.HDWallet, uint32, error) {
-	var wallet model.HDWallet
+func (r *AddressRepo) AllocateIndexTx(tx *gorm.DB, spec helpers.ChainSpec) (*addressmodel.HDWallet, uint32, error) {
+	var wallet addressmodel.HDWallet
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("chain = ?", spec.CanonicalChain).
 		First(&wallet).Error
@@ -38,7 +39,7 @@ func (r *AddressRepo) AllocateIndexTx(tx *gorm.DB, spec helpers.ChainSpec) (*mod
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, 0, err
 		}
-		wallet = model.HDWallet{
+		wallet = addressmodel.HDWallet{
 			Chain:     spec.CanonicalChain,
 			Purpose:   spec.Purpose,
 			CoinType:  spec.CoinType,
@@ -57,10 +58,37 @@ func (r *AddressRepo) AllocateIndexTx(tx *gorm.DB, spec helpers.ChainSpec) (*mod
 	}
 
 	index := wallet.NextIndex
-	if err := tx.Model(&model.HDWallet{}).
+	if err := tx.Model(&addressmodel.HDWallet{}).
 		Where("id = ?", wallet.ID).
 		Update("next_index", index+1).Error; err != nil {
 		return nil, 0, err
 	}
 	return &wallet, index, nil
+}
+
+func (r *AddressRepo) ListByChain(ctx context.Context, chain string) ([]addressmodel.UserAddress, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("address repo not configured")
+	}
+	var out []addressmodel.UserAddress
+	err := r.db.WithContext(ctx).
+		Where("chain = ?", chain).
+		Find(&out).Error
+	return out, err
+}
+
+func (r *AddressRepo) FindUserIDByChainAddress(ctx context.Context, chain string, address string) (string, error) {
+	if r == nil || r.db == nil {
+		return "", errors.New("address repo not configured")
+	}
+	chain = strings.TrimSpace(chain)
+	address = strings.TrimSpace(address)
+	var out addressmodel.UserAddress
+	if err := r.db.WithContext(ctx).
+		Select("user_id").
+		Where("chain = ? AND address = ?", chain, address).
+		First(&out).Error; err != nil {
+		return "", err
+	}
+	return out.UserID, nil
 }

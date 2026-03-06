@@ -13,7 +13,7 @@ import (
 	"wallet-system/internal/broadcaster"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/kafka"
-	"wallet-system/internal/storage/model"
+	withdrawmodel "wallet-system/internal/storage/model/withdraw"
 	"wallet-system/internal/storage/repo"
 	withdrawchain "wallet-system/internal/withdraw/chainclient"
 	signpb "wallet-system/proto/signer"
@@ -34,7 +34,7 @@ type RBFServer struct {
 type rbfOrderContext struct {
 	WithdrawID string
 	OldTxHash  string
-	Order      *model.WithdrawOrder
+	Order      *withdrawmodel.WithdrawOrder
 	Spec       helpers.ChainSpec
 }
 
@@ -170,7 +170,7 @@ func (s *RBFServer) loadAndValidateRBFOrder(ctx context.Context, req *withdrawpb
 	if err != nil {
 		return nil, err
 	}
-	if order.Status != model.StatusBROADCASTED {
+	if order.Status != withdrawmodel.StatusBROADCASTED {
 		return nil, errors.New("withdraw is not in BROADCASTED status")
 	}
 	if !strings.EqualFold(strings.TrimSpace(order.TxHash), oldTxHash) {

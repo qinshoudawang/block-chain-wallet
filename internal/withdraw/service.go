@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log"
 	"math/big"
@@ -17,7 +18,7 @@ import (
 	"wallet-system/internal/infra/kafka"
 	"wallet-system/internal/infra/redisx"
 	"wallet-system/internal/sequence/utxoreserve"
-	"wallet-system/internal/storage/model"
+	withdrawmodel "wallet-system/internal/storage/model/withdraw"
 	storagerepo "wallet-system/internal/storage/repo"
 	"wallet-system/internal/withdraw/chainclient"
 	signpb "wallet-system/proto/signer"
@@ -110,6 +111,21 @@ func (s *Service) MatchRequestChain(chain string) (string, error) {
 		return "", err
 	}
 	return reqSpec.CanonicalChain, nil
+}
+
+func (s *Service) EnqueueBroadcastTask(ctx context.Context, canonicalChain string, task *broadcaster.BroadcastTask) error {
+	if s == nil || s.Producer == nil {
+		return errors.New("kafka producer not configured")
+	}
+	if task == nil {
+		return errors.New("broadcast task is nil")
+	}
+	key := canonicalChain + ":" + task.From
+	taskBytes, err := json.Marshal(task)
+	if err != nil {
+		return err
+	}
+	return s.Producer.Publish(ctx, key, taskBytes)
 }
 
 type WithdrawInput struct {
@@ -329,7 +345,7 @@ func (s *Service) insertSignedOrder(
 		return "", "", errors.New("unsupported chain family for signed payload encoding")
 	}
 
-	if err := s.deps.Withdraw.InsertSigned(ctx, &model.WithdrawOrder{
+	if err := s.deps.Withdraw.InsertSigned(ctx, &withdrawmodel.WithdrawOrder{
 		WithdrawID:            withdrawID,
 		RequestID:             requestID,
 		Chain:                 chain,

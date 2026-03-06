@@ -8,7 +8,7 @@ import (
 	"wallet-system/internal/broadcaster/chainclient"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/sequence/utxoreserve"
-	"wallet-system/internal/storage/model"
+	withdrawmodel "wallet-system/internal/storage/model/withdraw"
 	"wallet-system/internal/storage/repo"
 	withdrawpb "wallet-system/proto/withdraw"
 )
@@ -92,7 +92,7 @@ func (c *Confirmer) tick(ctx context.Context) {
 	}
 }
 
-func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]uint64, o model.WithdrawOrder) {
+func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]uint64, o withdrawmodel.WithdrawOrder) {
 	chain, cli, err := c.clients.Resolve(o.Chain)
 	if err != nil {
 		log.Printf("[confirmer] resolve chain client failed withdraw_id=%s chain=%s err=%v", o.WithdrawID, o.Chain, err)
@@ -139,7 +139,7 @@ func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]u
 	}
 }
 
-func (c *Confirmer) shouldTriggerRBF(o model.WithdrawOrder, conf int) bool {
+func (c *Confirmer) shouldTriggerRBF(o withdrawmodel.WithdrawOrder, conf int) bool {
 	if c == nil {
 		return false
 	}
@@ -151,7 +151,7 @@ func (c *Confirmer) shouldTriggerRBF(o model.WithdrawOrder, conf int) bool {
 
 func (c *Confirmer) tryRBF(
 	ctx context.Context,
-	o model.WithdrawOrder,
+	o withdrawmodel.WithdrawOrder,
 	reason string,
 	confirmations int,
 ) {
@@ -173,7 +173,7 @@ func (c *Confirmer) tryRBF(
 	)
 }
 
-func (c *Confirmer) confirmFinal(ctx context.Context, chain string, o model.WithdrawOrder, cf *chainclient.Confirmation, threshold int) {
+func (c *Confirmer) confirmFinal(ctx context.Context, chain string, o withdrawmodel.WithdrawOrder, cf *chainclient.Confirmation, threshold int) {
 	if cf == nil || cf.Settlement == nil {
 		log.Printf("[confirmer] missing settlement withdraw_id=%s tx_hash=%s chain=%s", o.WithdrawID, o.TxHash, chain)
 		return

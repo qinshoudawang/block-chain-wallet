@@ -1,20 +1,25 @@
 package handler
 
 import (
+	"context"
 	"log"
 	"net/http"
 
-	"wallet-system/internal/address"
 	"wallet-system/internal/api/dto"
+	addressmodel "wallet-system/internal/storage/model/address"
 
 	"github.com/gin-gonic/gin"
 )
 
-type AddressHandler struct {
-	svc *address.AddressService
+type AddressService interface {
+	CreateUserAddress(ctx context.Context, userID string, chain string) (*addressmodel.UserAddress, error)
 }
 
-func NewAddressHandler(svc *address.AddressService) *AddressHandler {
+type AddressHandler struct {
+	svc AddressService
+}
+
+func NewAddressHandler(svc AddressService) *AddressHandler {
 	return &AddressHandler{svc: svc}
 }
 

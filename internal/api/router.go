@@ -1,14 +1,12 @@
 package api
 
 import (
-	"wallet-system/internal/address"
 	"wallet-system/internal/api/handler"
-	"wallet-system/internal/withdraw"
 
 	"github.com/gin-gonic/gin"
 )
 
-func NewRouter(wsvc *withdraw.Service, asvc *address.AddressService) *gin.Engine {
+func NewRouter(wsvc handler.WithdrawService, asvc handler.AddressService) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 

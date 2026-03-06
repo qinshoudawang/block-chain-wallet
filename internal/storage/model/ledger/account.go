@@ -1,4 +1,4 @@
-package model
+package ledgermodel
 
 import "time"
 

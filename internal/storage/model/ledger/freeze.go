@@ -1,10 +1,12 @@
-package model
+package ledgermodel
 
 import "time"
 
 type LedgerFreezeStatus string
 
 const (
+	LedgerBizTypeWithdraw = "WITHDRAW"
+
 	LedgerFreezeFrozen   LedgerFreezeStatus = "FROZEN"
 	LedgerFreezeReleased LedgerFreezeStatus = "RELEASED"
 	LedgerFreezeConsumed LedgerFreezeStatus = "CONSUMED"
