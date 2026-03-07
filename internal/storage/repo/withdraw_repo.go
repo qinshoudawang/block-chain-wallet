@@ -5,11 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"math/big"
+	"strings"
 	"time"
 
+	addressmodel "wallet-system/internal/storage/model/address"
 	withdrawmodel "wallet-system/internal/storage/model/withdraw"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type WithdrawRepo struct {
@@ -136,6 +139,26 @@ func (r *WithdrawRepo) ListBroadcastedToConfirm(ctx context.Context, limit int) 
 	return out, err
 }
 
+func (r *WithdrawRepo) ListFinalizedAfterID(ctx context.Context, chain string, lastID uint64, limit int) ([]withdrawmodel.WithdrawOrder, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("withdraw repo not configured")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	var out []withdrawmodel.WithdrawOrder
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND id > ? AND status IN ?", chain, lastID, []withdrawmodel.WithdrawStatus{
+			withdrawmodel.StatusCONFIRMED,
+			withdrawmodel.StatusFAILED,
+		}).
+		Order("id ASC").
+		Limit(limit).
+		Find(&out).Error
+	return out, err
+}
+
 // UpdateConfirmations: 更新确认数，达到阈值则置 CONFIRMED
 func (r *WithdrawRepo) UpdateConfirmations(ctx context.Context, withdrawID string, blockNum uint64, conf int, threshold int) (bool, error) {
 	return r.updateConfirmationsWithDB(r.db.WithContext(ctx), withdrawID, blockNum, conf, threshold)
@@ -213,26 +236,59 @@ func (r *WithdrawRepo) ConfirmWithSettlement(
 	}
 	var updated bool
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rec withdrawmodel.WithdrawOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("withdraw_id = ?", strings.TrimSpace(withdrawID)).
+			First(&rec).Error; err != nil {
+			return err
+		}
+		if rec.Status == withdrawmodel.StatusCONFIRMED {
+			updated = false
+			return nil
+		}
+		if rec.Status != withdrawmodel.StatusBROADCASTED {
+			updated = false
+			return nil
+		}
+
 		if lr != nil {
-			if transferAssetContractAddress == networkFeeAssetContractAddress {
-				totalSpent := new(big.Int)
-				if transferSpentAmount != nil {
-					totalSpent = totalSpent.Add(totalSpent, transferSpentAmount)
+			if isTopUpRequestID(rec.RequestID) {
+				spent := big.NewInt(0)
+				if transferSpentAmount != nil && transferSpentAmount.Sign() > 0 {
+					spent.Set(transferSpentAmount)
+				} else if v, ok := new(big.Int).SetString(strings.TrimSpace(rec.Amount), 10); ok && v.Sign() > 0 {
+					spent.Set(v)
 				}
-				if networkFeeAmount != nil {
-					totalSpent = totalSpent.Add(totalSpent, networkFeeAmount)
-				}
-				if totalSpent.Sign() > 0 {
-					if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, transferAssetContractAddress, totalSpent); err != nil {
+				if spent.Sign() > 0 {
+					toUserID, err := resolveUserIDByChainAddress(tx, rec.Chain, rec.ToAddr)
+					if err != nil {
+						return err
+					}
+					if err := lr.settleSystemTransferWithDB(tx, rec.Chain, rec.FromAddr, rec.ToAddr, "", spent, toUserID); err != nil {
 						return err
 					}
 				}
 			} else {
-				if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, transferAssetContractAddress, transferSpentAmount); err != nil {
-					return err
-				}
-				if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, networkFeeAssetContractAddress, networkFeeAmount); err != nil {
-					return err
+				if transferAssetContractAddress == networkFeeAssetContractAddress {
+					totalSpent := new(big.Int)
+					if transferSpentAmount != nil {
+						totalSpent = totalSpent.Add(totalSpent, transferSpentAmount)
+					}
+					if networkFeeAmount != nil {
+						totalSpent = totalSpent.Add(totalSpent, networkFeeAmount)
+					}
+					if totalSpent.Sign() > 0 {
+						if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, transferAssetContractAddress, totalSpent); err != nil {
+							return err
+						}
+					}
+				} else {
+					if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, transferAssetContractAddress, transferSpentAmount); err != nil {
+						return err
+					}
+					if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, networkFeeAssetContractAddress, networkFeeAmount); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -258,6 +314,24 @@ func (r *WithdrawRepo) ConfirmWithSettlement(
 		return nil
 	})
 	return updated, err
+}
+
+func isTopUpRequestID(requestID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(requestID), "sweeper-topup:")
+}
+
+func resolveUserIDByChainAddress(tx *gorm.DB, chain string, address string) (string, error) {
+	var ua addressmodel.UserAddress
+	err := tx.Select("user_id").
+		Where("chain = ? AND address = ?", strings.ToLower(strings.TrimSpace(chain)), strings.TrimSpace(address)).
+		First(&ua).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(ua.UserID), nil
 }
 
 func (r *WithdrawRepo) ReplaceBroadcastedSignedTx(

@@ -4,6 +4,7 @@ import (
 	addressmodel "wallet-system/internal/storage/model/address"
 	depositmodel "wallet-system/internal/storage/model/deposit"
 	ledgermodel "wallet-system/internal/storage/model/ledger"
+	reconcilemodel "wallet-system/internal/storage/model/reconcile"
 	sweepmodel "wallet-system/internal/storage/model/sweep"
 	userledgermodel "wallet-system/internal/storage/model/userledger"
 	utxomodel "wallet-system/internal/storage/model/utxo"
@@ -25,6 +26,10 @@ var resetTables = []string{
 	"user_addresses",
 	"utxo_reservations",
 	"sweep_orders",
+	"onchain_ledger_reconciliations",
+	"business_flow_reconciliations",
+	"onchain_ledger_reconciliation_logs",
+	"business_flow_reconciliation_logs",
 }
 
 // All creates/updates tables used by withdraw execution and broadcaster workers.
@@ -42,6 +47,10 @@ func All(db *gorm.DB) error {
 		&addressmodel.UserAddress{},
 		&utxomodel.UTXOReservation{},
 		&sweepmodel.SweepOrder{},
+		&reconcilemodel.OnchainLedgerReconciliation{},
+		&reconcilemodel.BusinessFlowReconciliation{},
+		&reconcilemodel.OnchainLedgerReconciliationLog{},
+		&reconcilemodel.BusinessFlowReconciliationLog{},
 	); err != nil {
 		return err
 	}

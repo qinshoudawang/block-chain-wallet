@@ -23,12 +23,12 @@ func (s *RBFServer) SubmitTopUp(ctx context.Context, req *withdrawpb.SubmitTopUp
 	if s == nil || s.withdrawSvc == nil {
 		return nil, errors.New("withdraw topup server not configured")
 	}
-	task, err := s.withdrawSvc.CreateAndSignSystemWithdraw(ctx, WithdrawInput{
+	task, err := s.withdrawSvc.CreateAndSignTopUpWithdraw(ctx, WithdrawInput{
 		Chain:  strings.TrimSpace(req.GetChain()),
 		To:     strings.TrimSpace(req.GetToAddress()),
 		Amount: strings.TrimSpace(req.GetAmount()),
 		Token:  "",
-	}, "sweeper-topup")
+	})
 	if err != nil {
 		return nil, err
 	}

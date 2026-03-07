@@ -6,7 +6,7 @@ RUN_DIR="$ROOT_DIR/.run"
 LOG_DIR="$ROOT_DIR/logs/dev"
 BIN_DIR="$RUN_DIR/bin"
 
-SERVICES=(signer api broadcaster depositor sweeper)
+SERVICES=(signer api broadcaster depositor sweeper reconciler)
 
 mkdir -p "$RUN_DIR" "$LOG_DIR" "$BIN_DIR"
 
@@ -48,6 +48,7 @@ command_for_service() {
     broadcaster) echo "$BIN_DIR/broadcaster" ;;
     depositor) echo "$BIN_DIR/depositor" ;;
     sweeper) echo "$BIN_DIR/sweeper" ;;
+    reconciler) echo "$BIN_DIR/reconciler" ;;
     *) echo "" ;;
   esac
 }
@@ -60,6 +61,7 @@ pattern_for_service() {
     broadcaster) echo "$BIN_DIR/broadcaster|wallet-system/cmd/broadcaster|go-build" ;;
     depositor) echo "$BIN_DIR/depositor|wallet-system/cmd/depositor|go-build" ;;
     sweeper) echo "$BIN_DIR/sweeper|wallet-system/cmd/sweeper|go-build" ;;
+    reconciler) echo "$BIN_DIR/reconciler|wallet-system/cmd/reconciler|go-build" ;;
     *) echo "" ;;
   esac
 }

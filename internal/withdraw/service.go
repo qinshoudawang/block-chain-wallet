@@ -148,12 +148,12 @@ func (s *Service) CreateAndSignWithdraw(ctx context.Context, in WithdrawInput) (
 	return task, err
 }
 
-// CreateAndSignSystemWithdraw creates a withdraw order without ledger freeze/risk steps.
-// It is used by internal system flows like token-gas topup.
-func (s *Service) CreateAndSignSystemWithdraw(ctx context.Context, in WithdrawInput, caller string) (task *broadcaster.BroadcastTask, err error) {
+// CreateAndSignTopUpWithdraw creates and signs an internal topup withdraw order.
+// It skips ledger freeze/risk precheck and uses a fixed caller for topup flow tagging.
+func (s *Service) CreateAndSignTopUpWithdraw(ctx context.Context, in WithdrawInput) (task *broadcaster.BroadcastTask, err error) {
 	_, task, err = flowpkg.Run(ctx, flowpkg.CreateTemplate{
 		Input:              flowpkg.CreateInput{Chain: in.Chain, To: in.To, Amount: in.Amount, Token: in.Token},
-		CallerName:         "withdraw-system",
+		CallerName:         "sweeper-topup",
 		SkipPrecheck:       true,
 		InitFn:             s.initCreateFlowState,
 		BeforeSignFn:       s.beforeSignCreateFlow,

@@ -292,6 +292,8 @@ func (c *Confirmer) processSweep(ctx context.Context, latestByChain map[string]u
 			threshold,
 			cf.Settlement.TransferAssetContractAddress,
 			cf.Settlement.TransferSpentAmount,
+			cf.Settlement.NetworkFeeAssetContractAddress,
+			cf.Settlement.NetworkFeeAmount,
 		)
 		if err != nil || !ok {
 			log.Printf("[confirmer] sweep confirm settle skipped sweep_id=%s tx_hash=%s chain=%s ok=%v err=%v", o.SweepID, o.TxHash, chain, ok, err)

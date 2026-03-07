@@ -23,9 +23,11 @@ type SweepOrder struct {
 	AssetContractAddress string `gorm:"type:varchar(128);not null;default:''"`
 	Amount               string `gorm:"type:varchar(80);not null"`
 
-	Status    SweepStatus `gorm:"type:varchar(24);not null;index:idx_sweep_status_chain,priority:1"`
-	TxHash    string      `gorm:"type:varchar(128);index"`
-	LastError string      `gorm:"type:text"`
+	Status                       SweepStatus `gorm:"type:varchar(24);not null;index:idx_sweep_status_chain,priority:1"`
+	TxHash                       string      `gorm:"type:varchar(128);index"`
+	LastError                    string      `gorm:"type:text"`
+	ActualSpentAmount            string      `gorm:"type:varchar(80);not null;default:''"`
+	TransferAssetContractAddress string      `gorm:"type:varchar(128);not null;default:''"`
 
 	BlockNumber   *uint64
 	Confirmations *int

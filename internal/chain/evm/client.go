@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"errors"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum"
@@ -82,6 +83,38 @@ func (c *Client) SubscribeFilterLogs(ctx context.Context, q ethereum.FilterQuery
 		return nil, ErrClientNotConfigured
 	}
 	return c.cli.SubscribeFilterLogs(ctx, q, ch)
+}
+
+func (c *Client) CallContract(ctx context.Context, msg ethereum.CallMsg) ([]byte, error) {
+	if c == nil || c.cli == nil {
+		return nil, ErrClientNotConfigured
+	}
+	return c.cli.CallContract(ctx, msg, nil)
+}
+
+func (c *Client) TokenBalanceAt(ctx context.Context, token common.Address, owner common.Address) (*big.Int, error) {
+	if token == (common.Address{}) || owner == (common.Address{}) {
+		return nil, errors.New("invalid token or owner address")
+	}
+	// ERC20 balanceOf(address): 0x70a08231
+	data := make([]byte, 4+32)
+	copy(data[:4], []byte{0x70, 0xa0, 0x82, 0x31})
+	copy(data[4:], common.LeftPadBytes(owner.Bytes(), 32))
+
+	out, err := c.CallContract(ctx, ethereum.CallMsg{
+		To:   &token,
+		Data: data,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return big.NewInt(0), nil
+	}
+	if len(out) < 32 {
+		return nil, errors.New("invalid balanceOf response")
+	}
+	return new(big.Int).SetBytes(out[len(out)-32:]), nil
 }
 
 func (c *Client) SuggestDynamicFeeCaps(ctx context.Context) (*big.Int, *big.Int, error) {

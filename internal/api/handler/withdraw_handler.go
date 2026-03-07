@@ -44,7 +44,6 @@ func (h *WithdrawHandler) Withdraw(c *gin.Context) {
 		return
 	}
 
-	// 获取签名
 	resp, err := h.svc.CreateAndSignWithdraw(c.Request.Context(), withdraw.WithdrawInput{
 		Chain:  canonicalChain,
 		To:     req.To,

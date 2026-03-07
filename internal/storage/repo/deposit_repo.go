@@ -238,6 +238,25 @@ func (r *DepositRepo) MarkReverted(ctx context.Context, id uint64) error {
 		}).Error
 }
 
+func (r *DepositRepo) ListFinalizedAfterID(ctx context.Context, chain string, lastID uint64, limit int) ([]depositmodel.DepositRecord, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("deposit repo not configured")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	var out []depositmodel.DepositRecord
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND id > ? AND status IN ?", chain, lastID, []depositmodel.Status{
+			depositmodel.StatusConfirmed, depositmodel.StatusReverted,
+		}).
+		Order("id ASC").
+		Limit(limit).
+		Find(&out).Error
+	return out, err
+}
+
 func (r *DepositRepo) ConfirmAndCredit(ctx context.Context, id uint64) (bool, error) {
 	if r == nil || r.db == nil {
 		return false, errors.New("deposit repo not configured")
