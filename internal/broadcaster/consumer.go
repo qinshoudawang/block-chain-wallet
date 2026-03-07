@@ -121,9 +121,7 @@ func (c *Consumer) handleWithdrawTask(ctx context.Context, task BroadcastTask, m
 
 	chain, cli, err := c.clients.Resolve(task.Chain)
 	if err != nil {
-		task.Attempt++
-		c.publishDLQTask(ctx, task, string(msg.Key))
-		log.Printf("DLQ withdraw=%s req=%s chain=%s err=%v", task.WithdrawID, task.RequestID, task.Chain, err)
+		c.handleBroadcastError(ctx, task, err, msg)
 		c.commit(ctx, msg)
 		return
 	}
@@ -231,11 +229,22 @@ func (c *Consumer) releaseReservation(ctx context.Context, withdrawID string, ch
 
 func (c *Consumer) publishDLQTask(ctx context.Context, task BroadcastTask, key string) {
 	b, _ := json.Marshal(task)
-	_ = c.runtime.Dlq.Publish(ctx, key, b)
+	if c == nil || c.runtime == nil || c.runtime.Dlq == nil {
+		log.Printf("dlq producer not configured key=%s withdraw=%s sweep=%s req=%s", key, task.WithdrawID, task.SweepID, task.RequestID)
+		return
+	}
+	if err := c.runtime.Dlq.Publish(ctx, key, b); err != nil {
+		log.Printf("publish dlq failed key=%s withdraw=%s sweep=%s req=%s err=%v", key, task.WithdrawID, task.SweepID, task.RequestID, err)
+	}
 }
 
 func (c *Consumer) commit(ctx context.Context, msg kafkago.Message) {
-	_ = c.runtime.Reader.CommitMessages(ctx, msg)
+	if c == nil || c.runtime == nil || c.runtime.Reader == nil {
+		return
+	}
+	if err := c.runtime.Reader.CommitMessages(ctx, msg); err != nil {
+		log.Printf("commit failed topic=%s partition=%d offset=%d err=%v", msg.Topic, msg.Partition, msg.Offset, err)
+	}
 }
 
 func broadcastWithRetry(ctx context.Context, cli chainclient.Client, signedPayload string, encoding string) (string, error) {

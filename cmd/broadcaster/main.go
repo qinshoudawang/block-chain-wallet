@@ -13,6 +13,7 @@ import (
 	"wallet-system/internal/broadcaster"
 	broadcasterchain "wallet-system/internal/broadcaster/chainclient"
 	btcchain "wallet-system/internal/chain/btc"
+	"wallet-system/internal/chain/evm"
 	solchain "wallet-system/internal/chain/sol"
 	"wallet-system/internal/clients"
 	"wallet-system/internal/config"
@@ -122,6 +123,18 @@ func initGorm() *gorm.DB {
 	return db
 }
 
+func initEVMClient() *evm.Client {
+	evmProf, err := env.LoadEVMProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid evm network config: %v", err)
+	}
+	client, err := evm.NewClient(evmProf.RPC)
+	if err != nil {
+		log.Fatalf("init evm client failed: %v", err)
+	}
+	return client
+}
+
 func initBTCClient() *btcchain.Client {
 	prof, ok, err := env.LoadBTCProfileFromEnv()
 	if err != nil {
@@ -162,6 +175,7 @@ func buildChainProfiles() map[string]config.ChainProfile {
 
 func buildBroadcasterChainClientRegistry(profiles map[string]config.ChainProfile) (*broadcasterchain.Registry, func()) {
 	registry := broadcasterchain.NewRegistry()
+	var evmClient *evm.Client
 	var btcClient *btcchain.Client
 	var solClient *solchain.Client
 
@@ -169,6 +183,14 @@ func buildBroadcasterChainClientRegistry(profiles map[string]config.ChainProfile
 		spec, err := helpers.ResolveChainSpec(chain)
 		if err != nil {
 			log.Fatalf("resolve chain spec failed chain=%s err=%v", chain, err)
+		}
+		if spec.Family == helpers.FamilyEVM {
+			if evmClient == nil {
+				evmClient = initEVMClient()
+			}
+			if err := registry.Register(chain, broadcasterchain.NewEVMClient(evmClient)); err != nil {
+				log.Fatalf("register broadcaster chain client failed: %v", err)
+			}
 		}
 		if spec.Family == helpers.FamilyBTC {
 			if btcClient == nil {
@@ -188,6 +210,9 @@ func buildBroadcasterChainClientRegistry(profiles map[string]config.ChainProfile
 		}
 	}
 	return registry, func() {
+		if evmClient != nil {
+			evmClient.Close()
+		}
 		if btcClient != nil {
 			btcClient.Close()
 		}
