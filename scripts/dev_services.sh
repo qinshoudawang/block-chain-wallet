@@ -6,7 +6,7 @@ RUN_DIR="$ROOT_DIR/.run"
 LOG_DIR="$ROOT_DIR/logs/dev"
 BIN_DIR="$RUN_DIR/bin"
 
-SERVICES=(signer api broadcaster depositor sweeper reconciler)
+SERVICES=(signer api broadcaster indexer sweeper reconciler)
 
 mkdir -p "$RUN_DIR" "$LOG_DIR" "$BIN_DIR"
 
@@ -46,7 +46,7 @@ command_for_service() {
     signer) echo "$BIN_DIR/signer" ;;
     api) echo "$BIN_DIR/api" ;;
     broadcaster) echo "$BIN_DIR/broadcaster" ;;
-    depositor) echo "$BIN_DIR/depositor" ;;
+    indexer) echo "$BIN_DIR/indexer" ;;
     sweeper) echo "$BIN_DIR/sweeper" ;;
     reconciler) echo "$BIN_DIR/reconciler" ;;
     *) echo "" ;;
@@ -59,7 +59,7 @@ pattern_for_service() {
     signer) echo "$BIN_DIR/signer|wallet-system/cmd/signer|go-build" ;;
     api) echo "$BIN_DIR/api|wallet-system/cmd/api|go-build" ;;
     broadcaster) echo "$BIN_DIR/broadcaster|wallet-system/cmd/broadcaster|go-build" ;;
-    depositor) echo "$BIN_DIR/depositor|wallet-system/cmd/depositor|go-build" ;;
+    indexer) echo "$BIN_DIR/indexer|wallet-system/cmd/indexer|go-build" ;;
     sweeper) echo "$BIN_DIR/sweeper|wallet-system/cmd/sweeper|go-build" ;;
     reconciler) echo "$BIN_DIR/reconciler|wallet-system/cmd/reconciler|go-build" ;;
     *) echo "" ;;
@@ -187,7 +187,7 @@ Services: ${SERVICES[*]}
 Examples:
   scripts/dev_services.sh start
   scripts/dev_services.sh restart api broadcaster
-  scripts/dev_services.sh logs depositor
+  scripts/dev_services.sh logs indexer
 USAGE
 }
 

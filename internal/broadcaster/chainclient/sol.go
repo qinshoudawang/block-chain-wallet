@@ -34,8 +34,7 @@ func (c *solanaClient) GetLatestHeight(ctx context.Context) (uint64, error) {
 	return c.sol.LatestHeight(ctx)
 }
 
-func (c *solanaClient) GetConfirmation(ctx context.Context, txHash string, amount string, tokenContractAddress string, latestHeight uint64) (*Confirmation, error) {
-	_ = tokenContractAddress
+func (c *solanaClient) GetConfirmation(ctx context.Context, txHash string, amount string, latestHeight uint64) (*Confirmation, error) {
 	if c == nil || c.sol == nil {
 		return nil, errors.New("solana rpc client is required")
 	}

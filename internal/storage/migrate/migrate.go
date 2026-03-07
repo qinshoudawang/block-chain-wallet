@@ -2,6 +2,7 @@ package migrate
 
 import (
 	addressmodel "wallet-system/internal/storage/model/address"
+	chainmodel "wallet-system/internal/storage/model/chain"
 	depositmodel "wallet-system/internal/storage/model/deposit"
 	ledgermodel "wallet-system/internal/storage/model/ledger"
 	reconcilemodel "wallet-system/internal/storage/model/reconcile"
@@ -15,9 +16,11 @@ import (
 
 var resetTables = []string{
 	"withdraw_orders",
+	"indexed_blocks",
+	"index_cursors",
+	"chain_events",
+	"projector_cursors",
 	"deposit_records",
-	"deposit_cursors",
-	"deposit_blocks",
 	"ledger_accounts",
 	"ledger_freezes",
 	"user_ledger_accounts",
@@ -36,9 +39,11 @@ var resetTables = []string{
 func All(db *gorm.DB) error {
 	if err := db.AutoMigrate(
 		&withdrawmodel.WithdrawOrder{},
+		&chainmodel.IndexedBlock{},
+		&chainmodel.IndexCursor{},
+		&chainmodel.ChainEvent{},
+		&chainmodel.ProjectorCursor{},
 		&depositmodel.DepositRecord{},
-		&depositmodel.DepositCursor{},
-		&depositmodel.DepositBlock{},
 		&ledgermodel.LedgerAccount{},
 		&ledgermodel.LedgerFreeze{},
 		&userledgermodel.UserLedgerAccount{},

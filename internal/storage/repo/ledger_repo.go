@@ -399,6 +399,82 @@ func (r *LedgerRepo) settleWithdrawFreezeWithDB(db *gorm.DB, withdrawID string, 
 		}).Error
 }
 
+func (r *LedgerRepo) revertWithdrawFreezeSettlementWithDB(db *gorm.DB, withdrawID string, assetContractAddress string, actualSpent *big.Int) error {
+	assetContractAddress = normalizeAssetContractAddress(assetContractAddress)
+	if actualSpent == nil {
+		actualSpent = big.NewInt(0)
+	}
+	if actualSpent.Sign() < 0 {
+		return errors.New("invalid actual spent amount")
+	}
+	tx := db
+	var fz ledgermodel.LedgerFreeze
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("biz_type = ? AND biz_id = ? AND asset_contract_address = ?", ledgermodel.LedgerBizTypeWithdraw, withdrawID, assetContractAddress).
+		First(&fz).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if fz.Status == ledgermodel.LedgerFreezeFrozen {
+		return nil
+	}
+	if fz.Status != ledgermodel.LedgerFreezeConsumed {
+		return fmt.Errorf("freeze not revertible: %s", fz.Status)
+	}
+
+	var acct ledgermodel.LedgerAccount
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("chain = ? AND address = ? AND asset_contract_address = ?", fz.Chain, fz.Address, fz.AssetContractAddress).
+		First(&acct).Error; err != nil {
+		return err
+	}
+
+	reserved, err := parseAmount(fz.Amount)
+	if err != nil {
+		return fmt.Errorf("parse freeze amount: %w", err)
+	}
+	avail, err := parseAmount(acct.AvailableAmount)
+	if err != nil {
+		return fmt.Errorf("parse ledger available: %w", err)
+	}
+	frozen, err := parseAmount(acct.FrozenAmount)
+	if err != nil {
+		return fmt.Errorf("parse ledger frozen: %w", err)
+	}
+
+	switch reserved.Cmp(actualSpent) {
+	case 1:
+		refund := new(big.Int).Sub(reserved, actualSpent)
+		if avail.Cmp(refund) < 0 {
+			return errors.New("ledger available insufficient for settlement revert refund")
+		}
+		avail.Sub(avail, refund)
+	case -1:
+		shortfall := new(big.Int).Sub(actualSpent, reserved)
+		avail.Add(avail, shortfall)
+	}
+	frozen.Add(frozen, reserved)
+
+	if err := tx.Model(&ledgermodel.LedgerAccount{}).
+		Where("id = ?", acct.ID).
+		Updates(map[string]any{
+			"available_amount": avail.String(),
+			"frozen_amount":    frozen.String(),
+		}).Error; err != nil {
+		return err
+	}
+
+	return tx.Model(&ledgermodel.LedgerFreeze{}).
+		Where("id = ?", fz.ID).
+		Updates(map[string]any{
+			"status":      ledgermodel.LedgerFreezeFrozen,
+			"consumed_at": nil,
+			"updated_at":  time.Now(),
+		}).Error
+}
+
 func parseAmount(v string) (*big.Int, error) {
 	n := new(big.Int)
 	if _, ok := n.SetString(v, 10); !ok || n.Sign() < 0 {
@@ -482,4 +558,68 @@ func (r *LedgerRepo) settleSystemTransferWithDB(
 	return tx.Model(&ledgermodel.LedgerAccount{}).
 		Where("id = ?", to.ID).
 		Updates(updates).Error
+}
+
+func (r *LedgerRepo) revertSystemTransferWithDB(
+	db *gorm.DB,
+	chain string,
+	fromAddr string,
+	toAddr string,
+	assetContractAddress string,
+	amount *big.Int,
+) error {
+	if amount == nil || amount.Sign() <= 0 {
+		return errors.New("invalid system transfer amount")
+	}
+	tx := db
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	fromAddr = strings.TrimSpace(fromAddr)
+	toAddr = strings.TrimSpace(toAddr)
+	assetContractAddress = normalizeAssetContractAddress(assetContractAddress)
+
+	var to ledgermodel.LedgerAccount
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("chain = ? AND address = ? AND asset_contract_address = ?", chain, toAddr, assetContractAddress).
+		First(&to).Error; err != nil {
+		return err
+	}
+	toAvail, err := parseAmount(to.AvailableAmount)
+	if err != nil {
+		return fmt.Errorf("parse destination available: %w", err)
+	}
+	if toAvail.Cmp(amount) < 0 {
+		return errors.New("destination available insufficient for system transfer revert")
+	}
+	toAvail.Sub(toAvail, amount)
+	if err := tx.Model(&ledgermodel.LedgerAccount{}).
+		Where("id = ?", to.ID).
+		Update("available_amount", toAvail.String()).Error; err != nil {
+		return err
+	}
+
+	var from ledgermodel.LedgerAccount
+	fromErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("chain = ? AND address = ? AND asset_contract_address = ?", chain, fromAddr, assetContractAddress).
+		First(&from).Error
+	if fromErr != nil && !errors.Is(fromErr, gorm.ErrRecordNotFound) {
+		return fromErr
+	}
+	if errors.Is(fromErr, gorm.ErrRecordNotFound) {
+		from = ledgermodel.LedgerAccount{
+			Chain:                chain,
+			Address:              fromAddr,
+			AssetContractAddress: assetContractAddress,
+			AvailableAmount:      amount.String(),
+			FrozenAmount:         "0",
+		}
+		return tx.Create(&from).Error
+	}
+	fromAvail, err := parseAmount(from.AvailableAmount)
+	if err != nil {
+		return fmt.Errorf("parse source available: %w", err)
+	}
+	fromAvail.Add(fromAvail, amount)
+	return tx.Model(&ledgermodel.LedgerAccount{}).
+		Where("id = ?", from.ID).
+		Update("available_amount", fromAvail.String()).Error
 }

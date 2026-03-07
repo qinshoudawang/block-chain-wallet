@@ -154,6 +154,155 @@ func (r *SweepRepo) CreateInit(ctx context.Context, in SweepCreateInput) (bool, 
 	return created, err
 }
 
+func (r *SweepRepo) GetBroadcastedByTxHash(ctx context.Context, chain string, txHash string) (*sweepmodel.SweepOrder, bool, error) {
+	if r == nil || r.db == nil {
+		return nil, false, errors.New("sweep repo not configured")
+	}
+	var out sweepmodel.SweepOrder
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND tx_hash = ? AND status = ?",
+			strings.ToLower(strings.TrimSpace(chain)),
+			strings.TrimSpace(txHash),
+			sweepmodel.SweepStatusBroadcasted,
+		).
+		First(&out).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &out, true, nil
+}
+
+func (r *SweepRepo) GetTrackedByTxHash(ctx context.Context, chain string, txHash string) (*sweepmodel.SweepOrder, bool, error) {
+	if r == nil || r.db == nil {
+		return nil, false, errors.New("sweep repo not configured")
+	}
+	var out sweepmodel.SweepOrder
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND tx_hash = ? AND status IN ?",
+			strings.ToLower(strings.TrimSpace(chain)),
+			strings.TrimSpace(txHash),
+			[]sweepmodel.SweepStatus{sweepmodel.SweepStatusBroadcasted, sweepmodel.SweepStatusConfirmed, sweepmodel.SweepStatusFailed},
+		).
+		Order("id DESC").
+		First(&out).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &out, true, nil
+}
+
+func (r *SweepRepo) ExistsTrackedTxHash(ctx context.Context, chain string, txHash string) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("sweep repo not configured")
+	}
+	var cnt int64
+	err := r.db.WithContext(ctx).
+		Model(&sweepmodel.SweepOrder{}).
+		Where("chain = ? AND tx_hash = ? AND status IN ?",
+			strings.ToLower(strings.TrimSpace(chain)),
+			strings.TrimSpace(txHash),
+			[]sweepmodel.SweepStatus{sweepmodel.SweepStatusBroadcasted, sweepmodel.SweepStatusConfirmed, sweepmodel.SweepStatusFailed},
+		).
+		Count(&cnt).Error
+	return cnt > 0, err
+}
+
+func (r *SweepRepo) FailWithSettlement(
+	ctx context.Context,
+	sweepID string,
+	transferAssetContractAddress string,
+	transferSpentAmount *big.Int,
+	networkFeeAssetContractAddress string,
+	networkFeeAmount *big.Int,
+) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("sweep repo not configured")
+	}
+	var updated bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rec sweepmodel.SweepOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("sweep_id = ?", strings.TrimSpace(sweepID)).
+			First(&rec).Error; err != nil {
+			return err
+		}
+		if rec.Status == sweepmodel.SweepStatusFailed {
+			updated = false
+			return nil
+		}
+		if rec.Status != sweepmodel.SweepStatusBroadcasted {
+			updated = false
+			return nil
+		}
+		amt := big.NewInt(0)
+		if transferSpentAmount != nil {
+			amt.Set(transferSpentAmount)
+		}
+		asset := strings.TrimSpace(transferAssetContractAddress)
+		if asset == "" {
+			asset = strings.TrimSpace(rec.AssetContractAddress)
+		}
+		reserved, ok := new(big.Int).SetString(strings.TrimSpace(rec.Amount), 10)
+		if !ok || reserved.Sign() <= 0 {
+			return fmt.Errorf("invalid reserved sweep amount: %s", rec.Amount)
+		}
+		var acct ledgermodel.LedgerAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("chain = ? AND address = ? AND asset_contract_address = ? AND user_id = ?",
+				rec.Chain, rec.FromAddress, asset, rec.UserID).
+			First(&acct).Error; err != nil {
+			return err
+		}
+		avail, ok := new(big.Int).SetString(strings.TrimSpace(acct.AvailableAmount), 10)
+		if !ok || avail.Sign() < 0 {
+			return fmt.Errorf("invalid ledger available amount: %s", acct.AvailableAmount)
+		}
+		frozen, ok := new(big.Int).SetString(strings.TrimSpace(acct.FrozenAmount), 10)
+		if !ok || frozen.Sign() < 0 {
+			return fmt.Errorf("invalid ledger frozen amount: %s", acct.FrozenAmount)
+		}
+		if frozen.Cmp(reserved) < 0 {
+			return errors.New("ledger frozen insufficient for sweep settle")
+		}
+		frozen.Sub(frozen, reserved)
+		refund := new(big.Int).Sub(reserved, amt)
+		if refund.Sign() > 0 {
+			avail.Add(avail, refund)
+		}
+		if err := tx.Model(&ledgermodel.LedgerAccount{}).
+			Where("id = ?", acct.ID).
+			Updates(map[string]any{"available_amount": avail.String(), "frozen_amount": frozen.String()}).Error; err != nil {
+			return err
+		}
+		if err := settleSweepNetworkFeeWithDB(tx, rec.Chain, rec.FromAddress, rec.UserID, networkFeeAssetContractAddress, networkFeeAmount); err != nil {
+			return err
+		}
+		res := tx.Model(&sweepmodel.SweepOrder{}).
+			Where("id = ? AND status = ?", rec.ID, sweepmodel.SweepStatusBroadcasted).
+			Updates(map[string]any{
+				"status":                             sweepmodel.SweepStatusFailed,
+				"last_error":                         "onchain execution failed",
+				"updated_at":                         time.Now(),
+				"actual_spent_amount":                amt.String(),
+				"transfer_asset_contract_address":    asset,
+				"network_fee_asset_contract_address": strings.TrimSpace(networkFeeAssetContractAddress),
+				"network_fee_amount":                 bigIntString(networkFeeAmount),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		updated = res.RowsAffected > 0
+		return nil
+	})
+	return updated, err
+}
+
 func (r *SweepRepo) MarkBroadcasted(ctx context.Context, sweepID string, txHash string) error {
 	if r == nil || r.db == nil {
 		return errors.New("sweep repo not configured")
@@ -430,18 +579,140 @@ func (r *SweepRepo) ConfirmWithSettlement(
 		}
 
 		updates := map[string]any{
-			"status":                          sweepmodel.SweepStatusConfirmed,
-			"block_number":                    blockNum,
-			"confirmations":                   conf,
-			"last_error":                      "",
-			"confirmed_at":                    time.Now(),
-			"updated_at":                      time.Now(),
-			"actual_spent_amount":             amt.String(),
-			"transfer_asset_contract_address": asset,
+			"status":                             sweepmodel.SweepStatusConfirmed,
+			"block_number":                       blockNum,
+			"confirmations":                      conf,
+			"last_error":                         "",
+			"confirmed_at":                       time.Now(),
+			"updated_at":                         time.Now(),
+			"actual_spent_amount":                amt.String(),
+			"transfer_asset_contract_address":    asset,
+			"network_fee_asset_contract_address": strings.TrimSpace(networkFeeAssetContractAddress),
+			"network_fee_amount":                 bigIntString(networkFeeAmount),
 		}
 		res := tx.Model(&sweepmodel.SweepOrder{}).
 			Where("id = ? AND status = ?", rec.ID, sweepmodel.SweepStatusBroadcasted).
 			Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		updated = res.RowsAffected > 0
+		return nil
+	})
+	return updated, err
+}
+
+func (r *SweepRepo) RevertConfirmationWithSettlement(ctx context.Context, sweepID string) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("sweep repo not configured")
+	}
+	var updated bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rec sweepmodel.SweepOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("sweep_id = ?", strings.TrimSpace(sweepID)).
+			First(&rec).Error; err != nil {
+			return err
+		}
+		if rec.Status == sweepmodel.SweepStatusBroadcasted {
+			updated = false
+			return nil
+		}
+		if rec.Status != sweepmodel.SweepStatusConfirmed && rec.Status != sweepmodel.SweepStatusFailed {
+			updated = false
+			return nil
+		}
+
+		actualSpent := big.NewInt(0)
+		if v, ok := new(big.Int).SetString(strings.TrimSpace(rec.ActualSpentAmount), 10); ok && v.Sign() >= 0 {
+			actualSpent = v
+		} else if v, ok := new(big.Int).SetString(strings.TrimSpace(rec.Amount), 10); ok && v.Sign() > 0 {
+			actualSpent = v
+		}
+		reserved, ok := new(big.Int).SetString(strings.TrimSpace(rec.Amount), 10)
+		if !ok || reserved.Sign() <= 0 {
+			return fmt.Errorf("invalid reserved sweep amount: %s", rec.Amount)
+		}
+		asset := strings.TrimSpace(rec.TransferAssetContractAddress)
+		if asset == "" {
+			asset = strings.TrimSpace(rec.AssetContractAddress)
+		}
+		var src ledgermodel.LedgerAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("chain = ? AND address = ? AND asset_contract_address = ? AND user_id = ?",
+				rec.Chain, rec.FromAddress, asset, rec.UserID).
+			First(&src).Error; err != nil {
+			return err
+		}
+		srcAvail, ok := new(big.Int).SetString(strings.TrimSpace(src.AvailableAmount), 10)
+		if !ok || srcAvail.Sign() < 0 {
+			return fmt.Errorf("invalid ledger available amount: %s", src.AvailableAmount)
+		}
+		srcFrozen, ok := new(big.Int).SetString(strings.TrimSpace(src.FrozenAmount), 10)
+		if !ok || srcFrozen.Sign() < 0 {
+			return fmt.Errorf("invalid ledger frozen amount: %s", src.FrozenAmount)
+		}
+		switch reserved.Cmp(actualSpent) {
+		case 1:
+			refund := new(big.Int).Sub(reserved, actualSpent)
+			if srcAvail.Cmp(refund) < 0 {
+				return errors.New("ledger available insufficient for sweep settlement revert refund")
+			}
+			srcAvail.Sub(srcAvail, refund)
+		case -1:
+			shortfall := new(big.Int).Sub(actualSpent, reserved)
+			srcAvail.Add(srcAvail, shortfall)
+		}
+		srcFrozen.Add(srcFrozen, reserved)
+		if err := tx.Model(&ledgermodel.LedgerAccount{}).
+			Where("id = ?", src.ID).
+			Updates(map[string]any{
+				"available_amount": srcAvail.String(),
+				"frozen_amount":    srcFrozen.String(),
+			}).Error; err != nil {
+			return err
+		}
+
+		if err := revertSweepNetworkFeeWithDB(tx, rec.Chain, rec.FromAddress, rec.UserID, rec.NetworkFeeAssetContractAddress, parseBigOrZero(rec.NetworkFeeAmount)); err != nil {
+			return err
+		}
+
+		if rec.Status == sweepmodel.SweepStatusConfirmed {
+			var dst ledgermodel.LedgerAccount
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("chain = ? AND address = ? AND asset_contract_address = ?", rec.Chain, rec.ToAddress, asset).
+				First(&dst).Error; err != nil {
+				return err
+			}
+			dstAvail, ok := new(big.Int).SetString(strings.TrimSpace(dst.AvailableAmount), 10)
+			if !ok || dstAvail.Sign() < 0 {
+				return fmt.Errorf("invalid destination ledger available amount: %s", dst.AvailableAmount)
+			}
+			if dstAvail.Cmp(actualSpent) < 0 {
+				return errors.New("destination available insufficient for sweep settlement revert")
+			}
+			dstAvail.Sub(dstAvail, actualSpent)
+			if err := tx.Model(&ledgermodel.LedgerAccount{}).
+				Where("id = ?", dst.ID).
+				Update("available_amount", dstAvail.String()).Error; err != nil {
+				return err
+			}
+		}
+
+		res := tx.Model(&sweepmodel.SweepOrder{}).
+			Where("id = ? AND status IN ?", rec.ID, []sweepmodel.SweepStatus{sweepmodel.SweepStatusConfirmed, sweepmodel.SweepStatusFailed}).
+			Updates(map[string]any{
+				"status":                             sweepmodel.SweepStatusBroadcasted,
+				"block_number":                       nil,
+				"confirmations":                      nil,
+				"confirmed_at":                       nil,
+				"actual_spent_amount":                "",
+				"transfer_asset_contract_address":    "",
+				"network_fee_asset_contract_address": "",
+				"network_fee_amount":                 "",
+				"last_error":                         "",
+				"updated_at":                         time.Now(),
+			})
 		if res.Error != nil {
 			return res.Error
 		}
@@ -484,4 +755,48 @@ func settleSweepNetworkFeeWithDB(
 	return tx.Model(&ledgermodel.LedgerAccount{}).
 		Where("id = ?", feeAcct.ID).
 		Update("available_amount", feeAvail.String()).Error
+}
+
+func revertSweepNetworkFeeWithDB(
+	tx *gorm.DB,
+	chain string,
+	fromAddress string,
+	userID string,
+	networkFeeAssetContractAddress string,
+	networkFeeAmount *big.Int,
+) error {
+	if networkFeeAmount == nil || networkFeeAmount.Sign() <= 0 {
+		return nil
+	}
+	feeAsset := strings.TrimSpace(networkFeeAssetContractAddress)
+	var feeAcct ledgermodel.LedgerAccount
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("chain = ? AND address = ? AND asset_contract_address = ? AND user_id = ?",
+			chain, fromAddress, feeAsset, userID).
+		First(&feeAcct).Error; err != nil {
+		return err
+	}
+	feeAvail, ok := new(big.Int).SetString(strings.TrimSpace(feeAcct.AvailableAmount), 10)
+	if !ok || feeAvail.Sign() < 0 {
+		return fmt.Errorf("invalid fee ledger available amount: %s", feeAcct.AvailableAmount)
+	}
+	feeAvail.Add(feeAvail, networkFeeAmount)
+	return tx.Model(&ledgermodel.LedgerAccount{}).
+		Where("id = ?", feeAcct.ID).
+		Update("available_amount", feeAvail.String()).Error
+}
+
+func bigIntString(v *big.Int) string {
+	if v == nil {
+		return ""
+	}
+	return v.String()
+}
+
+func parseBigOrZero(v string) *big.Int {
+	out, ok := new(big.Int).SetString(strings.TrimSpace(v), 10)
+	if !ok {
+		return big.NewInt(0)
+	}
+	return out
 }

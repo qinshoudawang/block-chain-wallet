@@ -23,7 +23,6 @@ const (
 )
 
 type confirmThresholds struct {
-	evm int
 	btc int
 	sol int
 }
@@ -139,6 +138,9 @@ func (c *Confirmer) confirmSweeps(ctx context.Context) {
 }
 
 func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]uint64, o withdrawmodel.WithdrawOrder) {
+	if isEVMChain(o.Chain) {
+		return
+	}
 	chain, cli, err := c.clients.Resolve(o.Chain)
 	if err != nil {
 		log.Printf("[confirmer] resolve chain client failed withdraw_id=%s chain=%s err=%v", o.WithdrawID, o.Chain, err)
@@ -156,7 +158,7 @@ func (c *Confirmer) processOrder(ctx context.Context, latestByChain map[string]u
 		latestByChain[chain] = latest
 	}
 
-	cf, err := cli.GetConfirmation(ctx, o.TxHash, o.Amount, o.TokenContractAddress, latest)
+	cf, err := cli.GetConfirmation(ctx, o.TxHash, o.Amount, latest)
 	if err != nil {
 		log.Printf("[confirmer] get confirmation failed withdraw_id=%s tx_hash=%s chain=%s err=%v", o.WithdrawID, o.TxHash, chain, err)
 		return
@@ -256,6 +258,9 @@ func (c *Confirmer) confirmFinal(ctx context.Context, chain string, o withdrawmo
 }
 
 func (c *Confirmer) processSweep(ctx context.Context, latestByChain map[string]uint64, o sweepmodel.SweepOrder) {
+	if isEVMChain(o.Chain) {
+		return
+	}
 	chain, cli, err := c.clients.Resolve(o.Chain)
 	if err != nil {
 		log.Printf("[confirmer] resolve chain client failed sweep_id=%s chain=%s err=%v", o.SweepID, o.Chain, err)
@@ -271,7 +276,7 @@ func (c *Confirmer) processSweep(ctx context.Context, latestByChain map[string]u
 		}
 		latestByChain[chain] = latest
 	}
-	cf, err := cli.GetConfirmation(ctx, o.TxHash, o.Amount, o.AssetContractAddress, latest)
+	cf, err := cli.GetConfirmation(ctx, o.TxHash, o.Amount, latest)
 	if err != nil {
 		log.Printf("[confirmer] get sweep confirmation failed sweep_id=%s tx_hash=%s chain=%s err=%v", o.SweepID, o.TxHash, chain, err)
 		return
@@ -312,7 +317,6 @@ func (c *Confirmer) processSweep(ctx context.Context, latestByChain map[string]u
 
 func loadConfirmThresholds() confirmThresholds {
 	return confirmThresholds{
-		evm: normalizeThreshold(helpers.ParseIntEnv("EVM_CONFIRM_THRESHOLD", 5), 5),
 		btc: normalizeThreshold(helpers.ParseIntEnv("BTC_CONFIRM_THRESHOLD", 2), 2),
 		sol: normalizeThreshold(helpers.ParseIntEnv("SOL_CONFIRM_THRESHOLD", 5), 5),
 	}
@@ -342,8 +346,6 @@ func (t confirmThresholds) forChain(chain string) int {
 	switch spec.Family {
 	case helpers.FamilyBTC:
 		return t.btc
-	case helpers.FamilyEVM:
-		return t.evm
 	case helpers.FamilySOL:
 		return t.sol
 	default:
@@ -356,4 +358,12 @@ func normalizeThreshold(v int, fallback int) int {
 		return v
 	}
 	return fallback
+}
+
+func isEVMChain(chain string) bool {
+	spec, err := helpers.ResolveChainSpec(chain)
+	if err != nil {
+		return false
+	}
+	return spec.Family == helpers.FamilyEVM
 }

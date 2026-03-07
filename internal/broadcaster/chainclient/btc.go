@@ -44,8 +44,7 @@ func (c *btcClient) GetLatestHeight(ctx context.Context) (uint64, error) {
 	return c.rpc.LatestHeight()
 }
 
-func (c *btcClient) GetConfirmation(ctx context.Context, txHash string, amount string, tokenContractAddress string, latestHeight uint64) (*Confirmation, error) {
-	_ = tokenContractAddress
+func (c *btcClient) GetConfirmation(ctx context.Context, txHash string, amount string, latestHeight uint64) (*Confirmation, error) {
 	if c == nil || c.rpc == nil {
 		return nil, errors.New("btc rpc client is required")
 	}

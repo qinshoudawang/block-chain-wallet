@@ -33,6 +33,135 @@ func (r *WithdrawRepo) GetByWithdrawID(ctx context.Context, withdrawID string) (
 	return &out, nil
 }
 
+func (r *WithdrawRepo) GetBroadcastedByTxHash(ctx context.Context, chain string, txHash string) (*withdrawmodel.WithdrawOrder, bool, error) {
+	if r == nil || r.db == nil {
+		return nil, false, errors.New("withdraw repo not configured")
+	}
+	var out withdrawmodel.WithdrawOrder
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND tx_hash = ? AND status = ?",
+			strings.ToLower(strings.TrimSpace(chain)),
+			strings.TrimSpace(txHash),
+			withdrawmodel.StatusBROADCASTED,
+		).
+		First(&out).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &out, true, nil
+}
+
+func (r *WithdrawRepo) GetTrackedByTxHash(ctx context.Context, chain string, txHash string) (*withdrawmodel.WithdrawOrder, bool, error) {
+	if r == nil || r.db == nil {
+		return nil, false, errors.New("withdraw repo not configured")
+	}
+	var out withdrawmodel.WithdrawOrder
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND tx_hash = ? AND status IN ?",
+			strings.ToLower(strings.TrimSpace(chain)),
+			strings.TrimSpace(txHash),
+			[]withdrawmodel.WithdrawStatus{withdrawmodel.StatusBROADCASTED, withdrawmodel.StatusCONFIRMED, withdrawmodel.StatusFAILED},
+		).
+		Order("id DESC").
+		First(&out).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &out, true, nil
+}
+
+func (r *WithdrawRepo) ExistsTrackedTxHash(ctx context.Context, chain string, txHash string) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("withdraw repo not configured")
+	}
+	var cnt int64
+	err := r.db.WithContext(ctx).
+		Model(&withdrawmodel.WithdrawOrder{}).
+		Where("chain = ? AND tx_hash = ? AND status IN ?",
+			strings.ToLower(strings.TrimSpace(chain)),
+			strings.TrimSpace(txHash),
+			[]withdrawmodel.WithdrawStatus{withdrawmodel.StatusBROADCASTED, withdrawmodel.StatusCONFIRMED, withdrawmodel.StatusFAILED},
+		).
+		Count(&cnt).Error
+	return cnt > 0, err
+}
+
+func (r *WithdrawRepo) FailWithSettlement(
+	ctx context.Context,
+	lr *LedgerRepo,
+	withdrawID string,
+	transferAssetContractAddress string,
+	transferSpentAmount *big.Int,
+	networkFeeAssetContractAddress string,
+	networkFeeAmount *big.Int,
+) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("withdraw repo not configured")
+	}
+	var updated bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rec withdrawmodel.WithdrawOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("withdraw_id = ?", strings.TrimSpace(withdrawID)).
+			First(&rec).Error; err != nil {
+			return err
+		}
+		if rec.Status == withdrawmodel.StatusFAILED {
+			updated = false
+			return nil
+		}
+		if rec.Status != withdrawmodel.StatusBROADCASTED {
+			updated = false
+			return nil
+		}
+
+		if lr != nil && !isTopUpRequestID(rec.RequestID) {
+			if transferAssetContractAddress == networkFeeAssetContractAddress {
+				totalSpent := new(big.Int)
+				if transferSpentAmount != nil {
+					totalSpent.Add(totalSpent, transferSpentAmount)
+				}
+				if networkFeeAmount != nil {
+					totalSpent.Add(totalSpent, networkFeeAmount)
+				}
+				if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, transferAssetContractAddress, totalSpent); err != nil {
+					return err
+				}
+			} else {
+				if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, transferAssetContractAddress, transferSpentAmount); err != nil {
+					return err
+				}
+				if err := lr.settleWithdrawFreezeWithDB(tx, withdrawID, networkFeeAssetContractAddress, networkFeeAmount); err != nil {
+					return err
+				}
+			}
+		}
+
+		if _, err := r.saveSettlementWithDB(tx, withdrawID, networkFeeAssetContractAddress, networkFeeAmount, transferSpentAmount); err != nil {
+			return err
+		}
+		res := tx.Model(&withdrawmodel.WithdrawOrder{}).
+			Where("id = ? AND status = ?", rec.ID, withdrawmodel.StatusBROADCASTED).
+			Updates(map[string]any{
+				"status":     withdrawmodel.StatusFAILED,
+				"last_error": "onchain execution failed",
+				"updated_at": time.Now(),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		updated = res.RowsAffected > 0
+		return nil
+	})
+	return updated, err
+}
+
 // InsertSigned: withdraw-api 在签名成功后落库 SIGNED，然后再投 Kafka
 func (r *WithdrawRepo) InsertSigned(ctx context.Context, o *withdrawmodel.WithdrawOrder) error {
 	o.Status = withdrawmodel.StatusSIGNED
@@ -311,6 +440,93 @@ func (r *WithdrawRepo) ConfirmWithSettlement(
 			return err
 		}
 		updated = ok
+		return nil
+	})
+	return updated, err
+}
+
+func (r *WithdrawRepo) RevertConfirmationWithSettlement(
+	ctx context.Context,
+	lr *LedgerRepo,
+	withdrawID string,
+) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("withdraw repo not configured")
+	}
+	var updated bool
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rec withdrawmodel.WithdrawOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("withdraw_id = ?", strings.TrimSpace(withdrawID)).
+			First(&rec).Error; err != nil {
+			return err
+		}
+		if rec.Status == withdrawmodel.StatusBROADCASTED {
+			updated = false
+			return nil
+		}
+		if rec.Status != withdrawmodel.StatusCONFIRMED && rec.Status != withdrawmodel.StatusFAILED {
+			updated = false
+			return nil
+		}
+
+		if lr != nil {
+			if isTopUpRequestID(rec.RequestID) {
+				spent := big.NewInt(0)
+				if v, ok := new(big.Int).SetString(strings.TrimSpace(rec.ActualSpentAmount), 10); ok && v.Sign() > 0 {
+					spent.Set(v)
+				} else if v, ok := new(big.Int).SetString(strings.TrimSpace(rec.Amount), 10); ok && v.Sign() > 0 {
+					spent.Set(v)
+				}
+				if spent.Sign() > 0 {
+					if err := lr.revertSystemTransferWithDB(tx, rec.Chain, rec.FromAddr, rec.ToAddr, "", spent); err != nil {
+						return err
+					}
+				}
+			} else {
+				transferSpent := big.NewInt(0)
+				if v, ok := new(big.Int).SetString(strings.TrimSpace(rec.ActualSpentAmount), 10); ok && v.Sign() >= 0 {
+					transferSpent = v
+				}
+				feeSpent := big.NewInt(0)
+				if v, ok := new(big.Int).SetString(strings.TrimSpace(rec.NetworkFeeAmount), 10); ok && v.Sign() >= 0 {
+					feeSpent = v
+				}
+				transferAsset := strings.TrimSpace(rec.TokenContractAddress)
+				feeAsset := strings.TrimSpace(rec.NetworkFeeAssetContractAddress)
+				if transferAsset == feeAsset {
+					total := new(big.Int).Add(new(big.Int).Set(transferSpent), feeSpent)
+					if err := lr.revertWithdrawFreezeSettlementWithDB(tx, rec.WithdrawID, transferAsset, total); err != nil {
+						return err
+					}
+				} else {
+					if err := lr.revertWithdrawFreezeSettlementWithDB(tx, rec.WithdrawID, transferAsset, transferSpent); err != nil {
+						return err
+					}
+					if err := lr.revertWithdrawFreezeSettlementWithDB(tx, rec.WithdrawID, feeAsset, feeSpent); err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		res := tx.Model(&withdrawmodel.WithdrawOrder{}).
+			Where("id = ? AND status IN ?", rec.ID, []withdrawmodel.WithdrawStatus{withdrawmodel.StatusCONFIRMED, withdrawmodel.StatusFAILED}).
+			Updates(map[string]any{
+				"status":                             withdrawmodel.StatusBROADCASTED,
+				"block_number":                       nil,
+				"confirmations":                      nil,
+				"confirmed_at":                       nil,
+				"network_fee_asset_contract_address": "",
+				"network_fee_amount":                 "",
+				"actual_spent_amount":                "",
+				"last_error":                         "",
+				"updated_at":                         time.Now(),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		updated = res.RowsAffected > 0
 		return nil
 	})
 	return updated, err

@@ -71,6 +71,13 @@ func (c *Client) HeaderByNumber(ctx context.Context, number *big.Int) (*types.He
 	return c.cli.HeaderByNumber(ctx, number)
 }
 
+func (c *Client) BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error) {
+	if c == nil || c.cli == nil {
+		return nil, ErrClientNotConfigured
+	}
+	return c.cli.BlockByNumber(ctx, number)
+}
+
 func (c *Client) FilterLogs(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
 	if c == nil || c.cli == nil {
 		return nil, ErrClientNotConfigured

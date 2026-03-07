@@ -10,17 +10,18 @@ import (
 	"time"
 
 	evmchain "wallet-system/internal/chain/evm"
+	"wallet-system/internal/chainindex"
 	"wallet-system/internal/config/env"
-	"wallet-system/internal/deposit"
 	"wallet-system/internal/helpers"
 	storagemigrate "wallet-system/internal/storage/migrate"
+	"wallet-system/internal/storage/repo"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 func init() {
-	helpers.InitServiceLogger("depositor")
+	helpers.InitServiceLogger("indexer")
 }
 
 func main() {
@@ -39,17 +40,27 @@ func main() {
 	}
 	defer evmCli.Close()
 
-	cfg := deposit.EVMScannerConfig{
-		Chain:           evmProf.Chain,
-		TokenContracts:  parseCSVEnv("EVM_TOKEN_CONTRACTS"),
-		Confirmations:   uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)),
-		PollInterval:    time.Duration(helpers.ParseIntEnv("DEPOSIT_EVM_POLL_SEC", 8)) * time.Second,
-		BatchBlocks:     uint64(helpers.ParseIntEnv("DEPOSIT_EVM_BATCH_BLOCKS", 200)),
-		StartBlock:      uint64(helpers.ParseIntEnv("DEPOSIT_EVM_START_BLOCK", 0)),
-		EnableSubscribe: strings.EqualFold(strings.TrimSpace(helpers.Getenv("DEPOSIT_EVM_SUBSCRIBE", "1")), "1"),
+	cfg := chainindex.EVMIndexerConfig{
+		Chain:          evmProf.Chain,
+		TokenContracts: parseCSVEnv("EVM_TOKEN_CONTRACTS"),
+		Confirmations:  uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)),
+		PollInterval:   time.Duration(helpers.ParseIntEnv("DEPOSIT_EVM_POLL_SEC", 8)) * time.Second,
+		BatchBlocks:    uint64(helpers.ParseIntEnv("DEPOSIT_EVM_BATCH_BLOCKS", 200)),
+		StartBlock:     uint64(helpers.ParseIntEnv("DEPOSIT_EVM_START_BLOCK", 0)),
 	}
-	log.Printf("[depositor] starting evm scanner chain=%s subscribe=%v contracts=%d", cfg.Chain, cfg.EnableSubscribe, len(cfg.TokenContracts))
-	deposit.NewEVMScanner(db, evmCli, cfg).Run(ctx)
+
+	chainRepo := repo.NewChainRepo(db)
+	depositRepo := repo.NewDepositRepo(db)
+	addressRepo := repo.NewAddressRepo(db)
+	withdrawRepo := repo.NewWithdrawRepo(db)
+	sweepRepo := repo.NewSweepRepo(db)
+	ledgerRepo := repo.NewLedgerRepo(db)
+
+	log.Printf("[indexer] starting evm chain index chain=%s contracts=%d confirmations=%d", cfg.Chain, len(cfg.TokenContracts), cfg.Confirmations)
+	go chainindex.NewEVMIndexer(chainRepo, addressRepo, withdrawRepo, sweepRepo, evmCli, cfg).Run(ctx)
+	go chainindex.NewDepositProjector(cfg.Chain, chainRepo, depositRepo, addressRepo, 3*time.Second).Run(ctx)
+	go chainindex.NewWithdrawProjector(cfg.Chain, chainRepo, withdrawRepo, ledgerRepo, 3*time.Second).Run(ctx)
+	chainindex.NewSweepProjector(cfg.Chain, chainRepo, sweepRepo, 3*time.Second).Run(ctx)
 }
 
 func initGorm() *gorm.DB {

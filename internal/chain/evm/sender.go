@@ -35,6 +35,13 @@ func (c *Client) TransactionReceipt(ctx context.Context, txHash common.Hash) (*t
 	return c.cli.TransactionReceipt(ctx, txHash)
 }
 
+func (c *Client) TransactionByHash(ctx context.Context, txHash common.Hash) (*types.Transaction, bool, error) {
+	if c == nil || c.cli == nil {
+		return nil, false, ErrClientNotConfigured
+	}
+	return c.cli.TransactionByHash(ctx, txHash)
+}
+
 var ErrClientNotConfigured = errClientNotConfigured{}
 
 type errClientNotConfigured struct{}
