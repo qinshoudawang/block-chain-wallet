@@ -213,6 +213,26 @@ func (r *SweepRepo) ExistsTrackedTxHash(ctx context.Context, chain string, txHas
 	return cnt > 0, err
 }
 
+func (r *SweepRepo) ListTrackedTxHashes(ctx context.Context, chain string, limit int) ([]string, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("sweep repo not configured")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	var out []string
+	err := r.db.WithContext(ctx).
+		Model(&sweepmodel.SweepOrder{}).
+		Distinct("tx_hash").
+		Where("chain = ? AND tx_hash <> '' AND status IN ?",
+			strings.ToLower(strings.TrimSpace(chain)),
+			[]sweepmodel.SweepStatus{sweepmodel.SweepStatusBroadcasted, sweepmodel.SweepStatusConfirmed, sweepmodel.SweepStatusFailed},
+		).
+		Limit(limit).
+		Pluck("tx_hash", &out).Error
+	return out, err
+}
+
 func (r *SweepRepo) FailWithSettlement(
 	ctx context.Context,
 	sweepID string,
@@ -410,6 +430,26 @@ func (r *SweepRepo) ListFinalizedAfterID(ctx context.Context, chain string, last
 	var out []sweepmodel.SweepOrder
 	err := r.db.WithContext(ctx).
 		Where("chain = ? AND id > ? AND status IN ?", chain, lastID, []sweepmodel.SweepStatus{
+			sweepmodel.SweepStatusConfirmed,
+			sweepmodel.SweepStatusFailed,
+		}).
+		Order("id ASC").
+		Limit(limit).
+		Find(&out).Error
+	return out, err
+}
+
+func (r *SweepRepo) ListReorgAffectedAfterID(ctx context.Context, chain string, fromBlock uint64, lastID uint64, limit int) ([]sweepmodel.SweepOrder, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("sweep repo not configured")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	var out []sweepmodel.SweepOrder
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND id > ? AND tx_hash <> '' AND block_number IS NOT NULL AND block_number >= ? AND status IN ?", chain, lastID, fromBlock, []sweepmodel.SweepStatus{
 			sweepmodel.SweepStatusConfirmed,
 			sweepmodel.SweepStatusFailed,
 		}).

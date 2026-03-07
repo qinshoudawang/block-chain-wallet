@@ -10,7 +10,7 @@ import (
 	"time"
 
 	evmchain "wallet-system/internal/chain/evm"
-	"wallet-system/internal/chainindex"
+	evmindex "wallet-system/internal/chainindex/evm"
 	"wallet-system/internal/config/env"
 	"wallet-system/internal/helpers"
 	storagemigrate "wallet-system/internal/storage/migrate"
@@ -40,7 +40,7 @@ func main() {
 	}
 	defer evmCli.Close()
 
-	cfg := chainindex.EVMIndexerConfig{
+	cfg := evmindex.EVMIndexerConfig{
 		Chain:          evmProf.Chain,
 		TokenContracts: parseCSVEnv("EVM_TOKEN_CONTRACTS"),
 		Confirmations:  uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)),
@@ -57,10 +57,10 @@ func main() {
 	ledgerRepo := repo.NewLedgerRepo(db)
 
 	log.Printf("[indexer] starting evm chain index chain=%s contracts=%d confirmations=%d", cfg.Chain, len(cfg.TokenContracts), cfg.Confirmations)
-	go chainindex.NewEVMIndexer(chainRepo, addressRepo, withdrawRepo, sweepRepo, evmCli, cfg).Run(ctx)
-	go chainindex.NewDepositProjector(cfg.Chain, chainRepo, depositRepo, addressRepo, 3*time.Second).Run(ctx)
-	go chainindex.NewWithdrawProjector(cfg.Chain, chainRepo, withdrawRepo, ledgerRepo, 3*time.Second).Run(ctx)
-	chainindex.NewSweepProjector(cfg.Chain, chainRepo, sweepRepo, 3*time.Second).Run(ctx)
+	go evmindex.NewEVMDepositProjector(cfg.Chain, chainRepo, depositRepo, addressRepo, 3*time.Second).Run(ctx)
+	go evmindex.NewEVMWithdrawProjector(cfg.Chain, cfg.Confirmations, chainRepo, withdrawRepo, ledgerRepo, evmCli, 3*time.Second).Run(ctx)
+	go evmindex.NewEVMSweepProjector(cfg.Chain, cfg.Confirmations, chainRepo, sweepRepo, evmCli, 3*time.Second).Run(ctx)
+	evmindex.NewEVMIndexer(chainRepo, addressRepo, evmCli, cfg).Run(ctx)
 }
 
 func initGorm() *gorm.DB {

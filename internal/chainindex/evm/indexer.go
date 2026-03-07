@@ -1,4 +1,4 @@
-package chainindex
+package evmindex
 
 import (
 	"context"
@@ -18,7 +18,10 @@ import (
 
 var erc20TransferTopic = common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
 
-const evmTransferStream = "evm_transfer"
+const (
+	evmIngressStream     = "evm_ingress"
+	legacyEVMTransferKey = "evm_transfer"
+)
 
 type EVMIndexerConfig struct {
 	Chain          string
@@ -30,22 +33,18 @@ type EVMIndexerConfig struct {
 }
 
 type EVMIndexer struct {
-	cfg          EVMIndexerConfig
-	evm          *evmchain.Client
-	repo         *repo.ChainRepo
-	addressRepo  *repo.AddressRepo
-	withdrawRepo *repo.WithdrawRepo
-	sweepRepo    *repo.SweepRepo
+	cfg         EVMIndexerConfig
+	evm         *evmchain.Client
+	repo        *repo.ChainRepo
+	addressRepo *repo.AddressRepo
 }
 
-func NewEVMIndexer(chainRepo *repo.ChainRepo, addressRepo *repo.AddressRepo, withdrawRepo *repo.WithdrawRepo, sweepRepo *repo.SweepRepo, client *evmchain.Client, cfg EVMIndexerConfig) *EVMIndexer {
+func NewEVMIndexer(chainRepo *repo.ChainRepo, addressRepo *repo.AddressRepo, client *evmchain.Client, cfg EVMIndexerConfig) *EVMIndexer {
 	return &EVMIndexer{
-		cfg:          cfg,
-		evm:          client,
-		repo:         chainRepo,
-		addressRepo:  addressRepo,
-		withdrawRepo: withdrawRepo,
-		sweepRepo:    sweepRepo,
+		cfg:         cfg,
+		evm:         client,
+		repo:        chainRepo,
+		addressRepo: addressRepo,
 	}
 }
 
@@ -105,7 +104,7 @@ func (s *EVMIndexer) scanOnce(ctx context.Context) {
 		log.Printf("[chain-indexer-evm] index range failed chain=%s from=%d to=%d err=%v", s.cfg.Chain, from, to, err)
 		return
 	}
-	if err := s.repo.SaveCursor(ctx, s.cfg.Chain, evmTransferStream, to+1); err != nil {
+	if err := s.repo.SaveCursor(ctx, s.cfg.Chain, evmIngressStream, to+1); err != nil {
 		log.Printf("[chain-indexer-evm] save cursor failed chain=%s next=%d err=%v", s.cfg.Chain, to+1, err)
 		return
 	}
@@ -113,7 +112,7 @@ func (s *EVMIndexer) scanOnce(ctx context.Context) {
 }
 
 func (s *EVMIndexer) prepareState(ctx context.Context) (*chainmodel.IndexCursor, uint64, bool) {
-	cur, err := s.repo.GetOrCreateCursor(ctx, s.cfg.Chain, evmTransferStream, s.cfg.StartBlock)
+	cur, err := s.loadOrMigrateCursor(ctx)
 	if err != nil {
 		log.Printf("[chain-indexer-evm] load cursor failed chain=%s err=%v", s.cfg.Chain, err)
 		return nil, 0, false
@@ -129,6 +128,28 @@ func (s *EVMIndexer) prepareState(ctx context.Context) (*chainmodel.IndexCursor,
 	return cur, latest, true
 }
 
+func (s *EVMIndexer) loadOrMigrateCursor(ctx context.Context) (*chainmodel.IndexCursor, error) {
+	cur, err := s.repo.GetOrCreateCursor(ctx, s.cfg.Chain, evmIngressStream, s.cfg.StartBlock)
+	if err != nil || cur == nil {
+		return cur, err
+	}
+	if cur.NextBlockNumber != s.cfg.StartBlock {
+		return cur, nil
+	}
+	legacy, err := s.repo.GetOrCreateCursor(ctx, s.cfg.Chain, legacyEVMTransferKey, s.cfg.StartBlock)
+	if err != nil || legacy == nil {
+		return cur, err
+	}
+	if legacy.NextBlockNumber <= s.cfg.StartBlock {
+		return cur, nil
+	}
+	if err := s.repo.SaveCursor(ctx, s.cfg.Chain, evmIngressStream, legacy.NextBlockNumber); err != nil {
+		return nil, err
+	}
+	cur.NextBlockNumber = legacy.NextBlockNumber
+	return cur, nil
+}
+
 func (s *EVMIndexer) handleReorgIfNeeded(ctx context.Context, cursor uint64) bool {
 	reorgFrom, err := s.detectReorgFromCursor(ctx, cursor)
 	if err != nil {
@@ -142,7 +163,7 @@ func (s *EVMIndexer) handleReorgIfNeeded(ctx context.Context, cursor uint64) boo
 		log.Printf("[chain-indexer-evm] revert from block failed chain=%s from=%d err=%v", s.cfg.Chain, reorgFrom, err)
 		return false
 	}
-	if err := s.repo.SaveCursor(ctx, s.cfg.Chain, evmTransferStream, reorgFrom); err != nil {
+	if err := s.repo.SaveCursor(ctx, s.cfg.Chain, evmIngressStream, reorgFrom); err != nil {
 		log.Printf("[chain-indexer-evm] rewind cursor failed chain=%s from=%d err=%v", s.cfg.Chain, reorgFrom, err)
 		return false
 	}
@@ -204,10 +225,6 @@ func (s *EVMIndexer) indexRange(ctx context.Context, from uint64, to uint64, dep
 			if receipt == nil {
 				continue
 			}
-			fromAddr, err := senderOf(tx)
-			if err != nil {
-				return err
-			}
 			for _, lg := range receipt.Logs {
 				if lg == nil || lg.Removed || len(lg.Topics) < 3 || len(lg.Data) != 32 {
 					continue
@@ -241,23 +258,6 @@ func (s *EVMIndexer) indexRange(ctx context.Context, from uint64, to uint64, dep
 					return err
 				}
 			}
-			txEvent, ok, err := buildTransactionEvent(s.cfg.Chain, tx, receipt, fromAddr)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				continue
-			}
-			relevant, err := s.isTrackedBusinessTransaction(ctx, txEvent.TxHash)
-			if err != nil {
-				return err
-			}
-			if !relevant {
-				continue
-			}
-			if _, err := s.repo.InsertApplyEvent(ctx, txEvent); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -280,28 +280,6 @@ func (s *EVMIndexer) loadDepositAddressSet(ctx context.Context) (map[string]stru
 		out[addr] = struct{}{}
 	}
 	return out, nil
-}
-
-func (s *EVMIndexer) isTrackedBusinessTransaction(ctx context.Context, txHash string) (bool, error) {
-	if s != nil && s.withdrawRepo != nil {
-		ok, err := s.withdrawRepo.ExistsTrackedTxHash(ctx, s.cfg.Chain, txHash)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			return true, nil
-		}
-	}
-	if s != nil && s.sweepRepo != nil {
-		ok, err := s.sweepRepo.ExistsTrackedTxHash(ctx, s.cfg.Chain, txHash)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func buildTransactionEvent(chain string, tx *ethtypes.Transaction, receipt *ethtypes.Receipt, fromAddr string) (repo.ChainEventInput, bool, error) {

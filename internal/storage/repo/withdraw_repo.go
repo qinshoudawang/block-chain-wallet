@@ -92,6 +92,26 @@ func (r *WithdrawRepo) ExistsTrackedTxHash(ctx context.Context, chain string, tx
 	return cnt > 0, err
 }
 
+func (r *WithdrawRepo) ListTrackedTxHashes(ctx context.Context, chain string, limit int) ([]string, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("withdraw repo not configured")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	var out []string
+	err := r.db.WithContext(ctx).
+		Model(&withdrawmodel.WithdrawOrder{}).
+		Distinct("tx_hash").
+		Where("chain = ? AND tx_hash <> '' AND status IN ?",
+			strings.ToLower(strings.TrimSpace(chain)),
+			[]withdrawmodel.WithdrawStatus{withdrawmodel.StatusBROADCASTED, withdrawmodel.StatusCONFIRMED, withdrawmodel.StatusFAILED},
+		).
+		Limit(limit).
+		Pluck("tx_hash", &out).Error
+	return out, err
+}
+
 func (r *WithdrawRepo) FailWithSettlement(
 	ctx context.Context,
 	lr *LedgerRepo,
@@ -279,6 +299,26 @@ func (r *WithdrawRepo) ListFinalizedAfterID(ctx context.Context, chain string, l
 	var out []withdrawmodel.WithdrawOrder
 	err := r.db.WithContext(ctx).
 		Where("chain = ? AND id > ? AND status IN ?", chain, lastID, []withdrawmodel.WithdrawStatus{
+			withdrawmodel.StatusCONFIRMED,
+			withdrawmodel.StatusFAILED,
+		}).
+		Order("id ASC").
+		Limit(limit).
+		Find(&out).Error
+	return out, err
+}
+
+func (r *WithdrawRepo) ListReorgAffectedAfterID(ctx context.Context, chain string, fromBlock uint64, lastID uint64, limit int) ([]withdrawmodel.WithdrawOrder, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("withdraw repo not configured")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	var out []withdrawmodel.WithdrawOrder
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND id > ? AND tx_hash <> '' AND block_number IS NOT NULL AND block_number >= ? AND status IN ?", chain, lastID, fromBlock, []withdrawmodel.WithdrawStatus{
 			withdrawmodel.StatusCONFIRMED,
 			withdrawmodel.StatusFAILED,
 		}).

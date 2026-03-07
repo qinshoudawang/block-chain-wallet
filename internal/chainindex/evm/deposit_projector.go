@@ -1,4 +1,4 @@
-package chainindex
+package evmindex
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 )
 
-type DepositProjector struct {
+type EVMDepositProjector struct {
 	chainRepo   *repo.ChainRepo
 	depositRepo *repo.DepositRepo
 	addressRepo *repo.AddressRepo
@@ -21,18 +21,18 @@ type DepositProjector struct {
 	poll        time.Duration
 }
 
-func NewDepositProjector(chain string, chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, addressRepo *repo.AddressRepo, poll time.Duration) *DepositProjector {
-	return &DepositProjector{
+func NewEVMDepositProjector(chain string, chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, addressRepo *repo.AddressRepo, poll time.Duration) *EVMDepositProjector {
+	return &EVMDepositProjector{
 		chainRepo:   chainRepo,
 		depositRepo: depositRepo,
 		addressRepo: addressRepo,
 		chain:       chain,
-		cursorName:  "deposit-projector:" + chain,
+		cursorName:  "evm-deposit-projector:" + chain,
 		poll:        poll,
 	}
 }
 
-func (p *DepositProjector) Run(ctx context.Context) {
+func (p *EVMDepositProjector) Run(ctx context.Context) {
 	if p == nil || p.chainRepo == nil || p.depositRepo == nil || p.addressRepo == nil {
 		return
 	}
@@ -46,7 +46,7 @@ func (p *DepositProjector) Run(ctx context.Context) {
 	})
 }
 
-func (p *DepositProjector) applyEvent(ctx context.Context, ev chainmodel.ChainEvent) error {
+func (p *EVMDepositProjector) applyEvent(ctx context.Context, ev chainmodel.ChainEvent) error {
 	userID, err := p.addressRepo.FindUserIDByChainAddress(ctx, ev.Chain, ev.ToAddress)
 	if err != nil {
 		if ev.Action == chainmodel.EventActionRevert {

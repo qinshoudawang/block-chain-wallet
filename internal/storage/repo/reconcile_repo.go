@@ -132,44 +132,25 @@ func (r *ReconcileRepo) UpsertBusinessFlowReconciliation(ctx context.Context, in
 		LastErrorMessage:     strings.TrimSpace(in.LastErrorMessage),
 		ReconciledAt:         &in.ReconciledAt,
 	}
-	logRec := reconcilemodel.BusinessFlowReconciliationLog{
-		FlowSource:           strings.ToUpper(strings.TrimSpace(in.FlowSource)),
-		BusinessType:         strings.ToUpper(strings.TrimSpace(in.BusinessType)),
-		BusinessID:           strings.TrimSpace(in.BusinessID),
-		UserID:               strings.TrimSpace(in.UserID),
-		Chain:                strings.ToLower(strings.TrimSpace(in.Chain)),
-		AssetContractAddress: strings.TrimSpace(in.AssetContractAddress),
-		ExpectedChangeAmount: strings.TrimSpace(in.ExpectedChangeAmount),
-		ActualChangeAmount:   strings.TrimSpace(in.ActualChangeAmount),
-		ReconciliationStatus: strings.ToUpper(strings.TrimSpace(in.ReconciliationStatus)),
-		HasMismatch:          in.HasMismatch,
-		LastErrorMessage:     strings.TrimSpace(in.LastErrorMessage),
-		ReconciledAt:         in.ReconciledAt,
-	}
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.
-			Clauses(clause.OnConflict{
-				Columns: []clause.Column{
-					{Name: "flow_source"},
-					{Name: "business_type"},
-					{Name: "business_id"},
-				},
-				DoUpdates: clause.AssignmentColumns([]string{
-					"user_id",
-					"chain",
-					"asset_contract_address",
-					"expected_change_amount",
-					"actual_change_amount",
-					"reconciliation_status",
-					"has_mismatch",
-					"last_error_message",
-					"reconciled_at",
-					"updated_at",
-				}),
-			}).
-			Create(&rec).Error; err != nil {
-			return err
-		}
-		return tx.Create(&logRec).Error
-	})
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "flow_source"},
+				{Name: "business_type"},
+				{Name: "business_id"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"user_id",
+				"chain",
+				"asset_contract_address",
+				"expected_change_amount",
+				"actual_change_amount",
+				"reconciliation_status",
+				"has_mismatch",
+				"last_error_message",
+				"reconciled_at",
+				"updated_at",
+			}),
+		}).
+		Create(&rec).Error
 }

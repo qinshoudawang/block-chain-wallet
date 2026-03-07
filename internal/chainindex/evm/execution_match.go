@@ -1,4 +1,4 @@
-package chainindex
+package evmindex
 
 import (
 	"strings"

@@ -153,6 +153,12 @@ func (r *ChainRepo) RevertFromBlock(ctx context.Context, chain string, fromBlock
 	}
 	chain = normalizeChain(chain)
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&chainmodel.ReorgNotice{
+			Chain:     chain,
+			FromBlock: fromBlock,
+		}).Error; err != nil {
+			return err
+		}
 		var rows []chainmodel.ChainEvent
 		if err := tx.
 			Where("chain = ? AND block_number >= ? AND action = ?", chain, fromBlock, chainmodel.EventActionApply).
@@ -196,6 +202,22 @@ func (r *ChainRepo) RevertFromBlock(ctx context.Context, chain string, fromBlock
 		}
 		return tx.Where("chain = ? AND block_number >= ?", chain, fromBlock).Delete(&chainmodel.IndexedBlock{}).Error
 	})
+}
+
+func (r *ChainRepo) ListReorgNoticesAfterID(ctx context.Context, chain string, lastID uint64, limit int) ([]chainmodel.ReorgNotice, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("chain repo not configured")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []chainmodel.ReorgNotice
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND id > ?", normalizeChain(chain), lastID).
+		Order("id ASC").
+		Limit(limit).
+		Find(&out).Error
+	return out, err
 }
 
 func (r *ChainRepo) GetOrCreateProjectorCursor(ctx context.Context, name string) (*chainmodel.ProjectorCursor, error) {

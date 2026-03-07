@@ -18,6 +18,7 @@ var resetTables = []string{
 	"withdraw_orders",
 	"indexed_blocks",
 	"index_cursors",
+	"reorg_notices",
 	"chain_events",
 	"projector_cursors",
 	"deposit_records",
@@ -32,7 +33,6 @@ var resetTables = []string{
 	"onchain_ledger_reconciliations",
 	"business_flow_reconciliations",
 	"onchain_ledger_reconciliation_logs",
-	"business_flow_reconciliation_logs",
 }
 
 // All creates/updates tables used by withdraw execution and broadcaster workers.
@@ -41,6 +41,7 @@ func All(db *gorm.DB) error {
 		&withdrawmodel.WithdrawOrder{},
 		&chainmodel.IndexedBlock{},
 		&chainmodel.IndexCursor{},
+		&chainmodel.ReorgNotice{},
 		&chainmodel.ChainEvent{},
 		&chainmodel.ProjectorCursor{},
 		&depositmodel.DepositRecord{},
@@ -55,7 +56,6 @@ func All(db *gorm.DB) error {
 		&reconcilemodel.OnchainLedgerReconciliation{},
 		&reconcilemodel.BusinessFlowReconciliation{},
 		&reconcilemodel.OnchainLedgerReconciliationLog{},
-		&reconcilemodel.BusinessFlowReconciliationLog{},
 	); err != nil {
 		return err
 	}
