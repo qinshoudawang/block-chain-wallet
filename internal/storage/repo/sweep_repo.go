@@ -439,6 +439,20 @@ func (r *SweepRepo) ListFinalizedAfterID(ctx context.Context, chain string, last
 	return out, err
 }
 
+func (r *SweepRepo) ListConfirmedBetween(ctx context.Context, chain string, from time.Time, to time.Time) ([]sweepmodel.SweepOrder, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("sweep repo not configured")
+	}
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	var out []sweepmodel.SweepOrder
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND status = ? AND confirmed_at IS NOT NULL AND confirmed_at > ? AND confirmed_at <= ?",
+			chain, sweepmodel.SweepStatusConfirmed, from, to).
+		Order("confirmed_at ASC, id ASC").
+		Find(&out).Error
+	return out, err
+}
+
 func (r *SweepRepo) ListReorgAffectedAfterID(ctx context.Context, chain string, fromBlock uint64, lastID uint64, limit int) ([]sweepmodel.SweepOrder, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("sweep repo not configured")

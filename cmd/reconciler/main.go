@@ -15,6 +15,7 @@ import (
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/redisx"
 	"wallet-system/internal/reconcile"
+	evmreconcile "wallet-system/internal/reconcile/evm"
 	storagemigrate "wallet-system/internal/storage/migrate"
 	"wallet-system/internal/storage/repo"
 
@@ -32,6 +33,7 @@ func main() {
 	go handleShutdown(cancel)
 
 	db := initGorm()
+	repos := initRepos(db)
 	rdc := initRedis(ctx)
 	defer rdc.RDB.Close()
 
@@ -47,7 +49,7 @@ func main() {
 
 	tokenContracts := parseCSVEnv("EVM_TOKEN_CONTRACTS")
 	tolerance := parseBigIntEnv("RECON_EVM_TOLERANCE_WEI", "0")
-	cfg := reconcile.EVMReconcilerConfig{
+	cfg := evmreconcile.BalanceReconcilerConfig{
 		Chain:          evmProf.Chain,
 		HotAddress:     evmProf.From.Hex(),
 		TokenContracts: tokenContracts,
@@ -61,33 +63,92 @@ func main() {
 		cfg.Chain, cfg.HotAddress, len(cfg.TokenContracts)+1, cfg.HotPoll.String(), cfg.UserPoll.String(),
 		cfg.HotLockTTL.String(), cfg.UserLockTTL.String(), cfg.Tolerance.String())
 
-	r := reconcile.NewEVMReconciler(
+	r := buildEVMBalanceReconciler(cfg, evmCli, rdc, repos)
+	delta := buildBalanceDeltaReconciler(evmProf.Chain, evmProf.From.Hex(), tokenContracts, rdc, repos)
+	flow := buildFlowReconciler(evmProf.Chain, rdc, repos)
+
+	go r.Run(ctx)
+	go delta.Run(ctx)
+	go flow.Run(ctx)
+	<-ctx.Done()
+}
+
+type repos struct {
+	address    *repo.AddressRepo
+	deposit    *repo.DepositRepo
+	ledger     *repo.LedgerRepo
+	reconcile  *repo.ReconcileRepo
+	sweep      *repo.SweepRepo
+	userLedger *repo.UserLedgerRepo
+	withdraw   *repo.WithdrawRepo
+}
+
+func initRepos(db *gorm.DB) repos {
+	return repos{
+		address:    repo.NewAddressRepo(db),
+		deposit:    repo.NewDepositRepo(db),
+		ledger:     repo.NewLedgerRepo(db),
+		reconcile:  repo.NewReconcileRepo(db),
+		sweep:      repo.NewSweepRepo(db),
+		userLedger: repo.NewUserLedgerRepo(db),
+		withdraw:   repo.NewWithdrawRepo(db),
+	}
+}
+
+func buildEVMBalanceReconciler(
+	cfg evmreconcile.BalanceReconcilerConfig,
+	evmCli *evmchain.Client,
+	redisClient *redisx.Client,
+	repos repos,
+) *evmreconcile.BalanceReconciler {
+	return evmreconcile.NewBalanceReconciler(
 		cfg,
 		evmCli,
-		rdc.RDB,
-		repo.NewAddressRepo(db),
-		repo.NewLedgerRepo(db),
-		repo.NewReconcileRepo(db),
+		redisClient.RDB,
+		repos.address,
+		repos.ledger,
+		repos.reconcile,
 	)
-	flow := reconcile.NewFlowReconciler(
+}
+
+func buildBalanceDeltaReconciler(
+	chain string,
+	hotAddress string,
+	tokenContracts []string,
+	redisClient *redisx.Client,
+	repos repos,
+) *reconcile.BalanceDeltaReconciler {
+	return reconcile.NewBalanceDeltaReconciler(
+		reconcile.BalanceDeltaReconcilerConfig{
+			Chain:          chain,
+			HotAddress:     hotAddress,
+			TokenContracts: tokenContracts,
+			PollInterval:   time.Duration(helpers.ParseIntEnv("RECON_BALANCE_DELTA_POLL_SEC", 30)) * time.Second,
+			LockTTL:        time.Duration(helpers.ParseIntEnv("RECON_BALANCE_DELTA_LOCK_TTL_SEC", 60)) * time.Second,
+		},
+		redisClient.RDB,
+		repos.reconcile,
+		repos.withdraw,
+		repos.sweep,
+	)
+}
+
+func buildFlowReconciler(chain string, redisClient *redisx.Client, repos repos) *reconcile.FlowReconciler {
+	return reconcile.NewFlowReconciler(
 		reconcile.FlowReconcilerConfig{
-			Chain:        evmProf.Chain,
+			Chain:        chain,
 			PollInterval: time.Duration(helpers.ParseIntEnv("RECON_FLOW_POLL_SEC", 60)) * time.Second,
 			LockTTL:      time.Duration(helpers.ParseIntEnv("RECON_FLOW_LOCK_TTL_SEC", 60)) * time.Second,
 			BatchSize:    helpers.ParseIntEnv("RECON_FLOW_BATCH", 500),
 		},
-		rdc.RDB,
-		repo.NewDepositRepo(db),
-		repo.NewWithdrawRepo(db),
-		repo.NewSweepRepo(db),
-		repo.NewLedgerRepo(db),
-		repo.NewUserLedgerRepo(db),
-		repo.NewReconcileRepo(db),
+		redisClient.RDB,
+		repos.deposit,
+		repos.withdraw,
+		repos.sweep,
+		repos.ledger,
+		repos.userLedger,
+		repos.reconcile,
 	)
-
-	go r.Run(ctx)
-	go flow.Run(ctx)
-	<-ctx.Done()
 }
 
 func initGorm() *gorm.DB {

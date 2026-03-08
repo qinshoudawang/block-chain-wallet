@@ -1,4 +1,4 @@
-package reconcile
+package evmreconcile
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-type EVMReconcilerConfig struct {
+type BalanceReconcilerConfig struct {
 	Chain          string
 	HotAddress     string
 	TokenContracts []string
@@ -28,8 +28,8 @@ type EVMReconcilerConfig struct {
 	Tolerance      *big.Int
 }
 
-type EVMReconciler struct {
-	cfg         EVMReconcilerConfig
+type BalanceReconciler struct {
+	cfg         BalanceReconcilerConfig
 	evm         *evmchain.Client
 	redis       *redis.Client
 	addressRepo *repo.AddressRepo
@@ -37,15 +37,15 @@ type EVMReconciler struct {
 	reconRepo   *repo.ReconcileRepo
 }
 
-func NewEVMReconciler(
-	cfg EVMReconcilerConfig,
+func NewBalanceReconciler(
+	cfg BalanceReconcilerConfig,
 	evm *evmchain.Client,
 	redisClient *redis.Client,
 	addressRepo *repo.AddressRepo,
 	ledgerRepo *repo.LedgerRepo,
 	reconRepo *repo.ReconcileRepo,
-) *EVMReconciler {
-	return &EVMReconciler{
+) *BalanceReconciler {
+	return &BalanceReconciler{
 		cfg:         cfg,
 		evm:         evm,
 		redis:       redisClient,
@@ -55,7 +55,7 @@ func NewEVMReconciler(
 	}
 }
 
-func (r *EVMReconciler) Run(ctx context.Context) {
+func (r *BalanceReconciler) Run(ctx context.Context) {
 	if r == nil || r.evm == nil || r.addressRepo == nil || r.ledgerRepo == nil || r.reconRepo == nil {
 		return
 	}
@@ -86,10 +86,10 @@ func (r *EVMReconciler) Run(ctx context.Context) {
 	}
 }
 
-func (r *EVMReconciler) tickHot(ctx context.Context) {
+func (r *BalanceReconciler) tickHot(ctx context.Context) {
 	unlock, ok, err := r.acquireLock(ctx, "hot", r.cfg.HotLockTTL)
 	if err != nil {
-		log.Printf("[reconciler-evm] acquire hot lock failed chain=%s err=%v", r.cfg.Chain, err)
+		log.Printf("[reconciler-evm-balance] acquire hot lock failed chain=%s err=%v", r.cfg.Chain, err)
 		return
 	}
 	if !ok {
@@ -97,7 +97,7 @@ func (r *EVMReconciler) tickHot(ctx context.Context) {
 	}
 	defer unlock()
 
-	assets := reconcileAssets(r.cfg.TokenContracts)
+	assets := balanceAssets(r.cfg.TokenContracts)
 	hot := strings.TrimSpace(r.cfg.HotAddress)
 	if hot == "" {
 		return
@@ -107,10 +107,10 @@ func (r *EVMReconciler) tickHot(ctx context.Context) {
 	}
 }
 
-func (r *EVMReconciler) tickUser(ctx context.Context) {
+func (r *BalanceReconciler) tickUser(ctx context.Context) {
 	unlock, ok, err := r.acquireLock(ctx, "user", r.cfg.UserLockTTL)
 	if err != nil {
-		log.Printf("[reconciler-evm] acquire user lock failed chain=%s err=%v", r.cfg.Chain, err)
+		log.Printf("[reconciler-evm-balance] acquire user lock failed chain=%s err=%v", r.cfg.Chain, err)
 		return
 	}
 	if !ok {
@@ -120,10 +120,10 @@ func (r *EVMReconciler) tickUser(ctx context.Context) {
 
 	addresses, err := r.addressRepo.ListByChain(ctx, strings.ToLower(strings.TrimSpace(r.cfg.Chain)))
 	if err != nil {
-		log.Printf("[reconciler-evm] list addresses failed chain=%s err=%v", r.cfg.Chain, err)
+		log.Printf("[reconciler-evm-balance] list addresses failed chain=%s err=%v", r.cfg.Chain, err)
 		return
 	}
-	assets := reconcileAssets(r.cfg.TokenContracts)
+	assets := balanceAssets(r.cfg.TokenContracts)
 	for i := range addresses {
 		addr := addresses[i]
 		for _, asset := range assets {
@@ -132,14 +132,14 @@ func (r *EVMReconciler) tickUser(ctx context.Context) {
 	}
 }
 
-func (r *EVMReconciler) acquireLock(ctx context.Context, scope string, ttl time.Duration) (func(), bool, error) {
+func (r *BalanceReconciler) acquireLock(ctx context.Context, scope string, ttl time.Duration) (func(), bool, error) {
 	if r.redis == nil {
 		return func() {}, true, nil
 	}
 	if ttl <= 0 {
 		ttl = 90 * time.Second
 	}
-	key := "lock:reconcile:evm:" + strings.ToLower(strings.TrimSpace(r.cfg.Chain)) + ":" + strings.ToLower(strings.TrimSpace(scope))
+	key := "lock:reconcile:evm-balance:" + strings.ToLower(strings.TrimSpace(r.cfg.Chain)) + ":" + strings.ToLower(strings.TrimSpace(scope))
 	unlock, err := redisx.Acquire(ctx, r.redis, key, ttl)
 	if err != nil {
 		if errors.Is(err, redisx.ErrLockNotAcquired) {
@@ -150,12 +150,12 @@ func (r *EVMReconciler) acquireLock(ctx context.Context, scope string, ttl time.
 	return unlock, true, nil
 }
 
-func (r *EVMReconciler) reconcileOne(ctx context.Context, userID string, address string, asset string) {
+func (r *BalanceReconciler) reconcileOne(ctx context.Context, userID string, address string, asset string) {
 	scope := resolveScope(strings.TrimSpace(userID))
 	asset = strings.TrimSpace(asset)
 	acct, ok, err := r.ledgerRepo.GetByChainAddressAsset(ctx, r.cfg.Chain, address, asset)
 	if err != nil {
-		log.Printf("[reconciler-evm] load ledger account failed chain=%s address=%s asset=%s err=%v", r.cfg.Chain, address, asset, err)
+		log.Printf("[reconciler-evm-balance] load ledger account failed chain=%s address=%s asset=%s err=%v", r.cfg.Chain, address, asset, err)
 		r.saveResult(ctx, scope, userID, address, asset, "0", "0", "0", reconcilemodel.StatusError, false, err.Error())
 		return
 	}
@@ -164,7 +164,7 @@ func (r *EVMReconciler) reconcileOne(ctx context.Context, userID string, address
 		avail, okAvail := new(big.Int).SetString(strings.TrimSpace(acct.AvailableAmount), 10)
 		frozen, okFrozen := new(big.Int).SetString(strings.TrimSpace(acct.FrozenAmount), 10)
 		if !okAvail || !okFrozen || avail.Sign() < 0 || frozen.Sign() < 0 {
-			log.Printf("[reconciler-evm] invalid ledger amounts chain=%s address=%s asset=%s avail=%s frozen=%s",
+			log.Printf("[reconciler-evm-balance] invalid ledger amounts chain=%s address=%s asset=%s avail=%s frozen=%s",
 				r.cfg.Chain, address, asset, acct.AvailableAmount, acct.FrozenAmount)
 			r.saveResult(ctx, scope, userID, address, asset, "0", "0", "0", reconcilemodel.StatusError, false, "invalid ledger amounts")
 			return
@@ -174,7 +174,7 @@ func (r *EVMReconciler) reconcileOne(ctx context.Context, userID string, address
 
 	chainBal, err := r.fetchOnchainBalance(ctx, address, asset)
 	if err != nil {
-		log.Printf("[reconciler-evm] fetch onchain balance failed chain=%s address=%s asset=%s err=%v", r.cfg.Chain, address, asset, err)
+		log.Printf("[reconciler-evm-balance] fetch onchain balance failed chain=%s address=%s asset=%s err=%v", r.cfg.Chain, address, asset, err)
 		r.saveResult(ctx, scope, userID, address, asset, "0", ledgerTotal.String(), "0", reconcilemodel.StatusError, false, err.Error())
 		return
 	}
@@ -192,11 +192,11 @@ func (r *EVMReconciler) reconcileOne(ctx context.Context, userID string, address
 	if !isMismatch {
 		return
 	}
-	log.Printf("[reconciler-evm] mismatch chain=%s user=%s address=%s asset=%s onchain=%s ledger_total=%s diff=%s",
+	log.Printf("[reconciler-evm-balance] mismatch chain=%s user=%s address=%s asset=%s onchain=%s ledger_total=%s diff=%s",
 		r.cfg.Chain, strings.TrimSpace(userID), address, asset, chainBal.String(), ledgerTotal.String(), diff.String())
 }
 
-func (r *EVMReconciler) saveResult(
+func (r *BalanceReconciler) saveResult(
 	ctx context.Context,
 	scope string,
 	userID string,
@@ -227,12 +227,12 @@ func (r *EVMReconciler) saveResult(
 		ReconciledAt:         time.Now(),
 	})
 	if err != nil {
-		log.Printf("[reconciler-evm] save result failed chain=%s scope=%s user=%s address=%s asset=%s err=%v",
+		log.Printf("[reconciler-evm-balance] save result failed chain=%s scope=%s user=%s address=%s asset=%s err=%v",
 			r.cfg.Chain, scope, strings.TrimSpace(userID), strings.TrimSpace(address), strings.TrimSpace(asset), err)
 	}
 }
 
-func (r *EVMReconciler) fetchOnchainBalance(ctx context.Context, address string, asset string) (*big.Int, error) {
+func (r *BalanceReconciler) fetchOnchainBalance(ctx context.Context, address string, asset string) (*big.Int, error) {
 	owner := common.HexToAddress(strings.TrimSpace(address))
 	if strings.TrimSpace(asset) == "" {
 		return r.evm.BalanceAt(ctx, owner)
@@ -240,7 +240,7 @@ func (r *EVMReconciler) fetchOnchainBalance(ctx context.Context, address string,
 	return r.evm.TokenBalanceAt(ctx, common.HexToAddress(strings.TrimSpace(asset)), owner)
 }
 
-func reconcileAssets(tokenContracts []string) []string {
+func balanceAssets(tokenContracts []string) []string {
 	seen := map[string]struct{}{"": {}}
 	out := []string{""}
 	for _, c := range tokenContracts {

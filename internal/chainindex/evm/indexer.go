@@ -12,16 +12,14 @@ import (
 	chainmodel "wallet-system/internal/storage/model/chain"
 	"wallet-system/internal/storage/repo"
 
+	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
 var erc20TransferTopic = common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
 
-const (
-	evmIngressStream     = "evm_ingress"
-	legacyEVMTransferKey = "evm_transfer"
-)
+const evmIngressStream = "evm_ingress"
 
 type EVMIndexerConfig struct {
 	Chain          string
@@ -112,7 +110,7 @@ func (s *EVMIndexer) scanOnce(ctx context.Context) {
 }
 
 func (s *EVMIndexer) prepareState(ctx context.Context) (*chainmodel.IndexCursor, uint64, bool) {
-	cur, err := s.loadOrMigrateCursor(ctx)
+	cur, err := s.repo.GetOrCreateCursor(ctx, s.cfg.Chain, evmIngressStream, s.cfg.StartBlock)
 	if err != nil {
 		log.Printf("[chain-indexer-evm] load cursor failed chain=%s err=%v", s.cfg.Chain, err)
 		return nil, 0, false
@@ -126,28 +124,6 @@ func (s *EVMIndexer) prepareState(ctx context.Context) (*chainmodel.IndexCursor,
 		return cur, latest, false
 	}
 	return cur, latest, true
-}
-
-func (s *EVMIndexer) loadOrMigrateCursor(ctx context.Context) (*chainmodel.IndexCursor, error) {
-	cur, err := s.repo.GetOrCreateCursor(ctx, s.cfg.Chain, evmIngressStream, s.cfg.StartBlock)
-	if err != nil || cur == nil {
-		return cur, err
-	}
-	if cur.NextBlockNumber != s.cfg.StartBlock {
-		return cur, nil
-	}
-	legacy, err := s.repo.GetOrCreateCursor(ctx, s.cfg.Chain, legacyEVMTransferKey, s.cfg.StartBlock)
-	if err != nil || legacy == nil {
-		return cur, err
-	}
-	if legacy.NextBlockNumber <= s.cfg.StartBlock {
-		return cur, nil
-	}
-	if err := s.repo.SaveCursor(ctx, s.cfg.Chain, evmIngressStream, legacy.NextBlockNumber); err != nil {
-		return nil, err
-	}
-	cur.NextBlockNumber = legacy.NextBlockNumber
-	return cur, nil
 }
 
 func (s *EVMIndexer) handleReorgIfNeeded(ctx context.Context, cursor uint64) bool {
@@ -210,57 +186,73 @@ func (s *EVMIndexer) detectReorgFromCursor(ctx context.Context, cursor uint64) (
 
 func (s *EVMIndexer) indexRange(ctx context.Context, from uint64, to uint64, depositAddressSet map[string]struct{}) error {
 	for n := from; n <= to; n++ {
-		block, err := s.evm.BlockByNumber(ctx, big.NewInt(int64(n)))
+		head, err := s.evm.HeaderByNumber(ctx, big.NewInt(int64(n)))
 		if err != nil {
 			return err
 		}
-		if err := s.repo.UpsertBlock(ctx, s.cfg.Chain, n, block.Hash().Hex(), block.ParentHash().Hex()); err != nil {
+		if err := s.repo.UpsertBlock(ctx, s.cfg.Chain, n, head.Hash().Hex(), head.ParentHash.Hex()); err != nil {
 			return err
 		}
-		for _, tx := range block.Transactions() {
-			receipt, err := s.evm.TransactionReceipt(ctx, tx.Hash())
-			if err != nil {
-				return err
-			}
-			if receipt == nil {
-				continue
-			}
-			for _, lg := range receipt.Logs {
-				if lg == nil || lg.Removed || len(lg.Topics) < 3 || len(lg.Data) != 32 {
-					continue
-				}
-				if lg.Topics[0] != erc20TransferTopic {
-					continue
-				}
-				amount := new(big.Int).SetBytes(lg.Data)
-				if amount.Sign() <= 0 {
-					continue
-				}
-				toAddr := common.BytesToAddress(lg.Topics[2].Bytes()[12:]).Hex()
-				if _, ok := depositAddressSet[strings.ToLower(strings.TrimSpace(toAddr))]; !ok {
-					continue
-				}
-				_, err = s.repo.InsertApplyEvent(ctx, repo.ChainEventInput{
-					Chain:                s.cfg.Chain,
-					EventType:            chainmodel.EventTypeTransfer,
-					BlockNumber:          receipt.BlockNumber.Uint64(),
-					BlockHash:            receipt.BlockHash.Hex(),
-					TxHash:               receipt.TxHash.Hex(),
-					TxIndex:              uint(receipt.TransactionIndex),
-					LogIndex:             uint(lg.Index),
-					AssetContractAddress: lg.Address.Hex(),
-					FromAddress:          common.BytesToAddress(lg.Topics[1].Bytes()[12:]).Hex(),
-					ToAddress:            toAddr,
-					Amount:               amount,
-					Success:              receipt.Status == ethtypes.ReceiptStatusSuccessful,
-				})
-				if err != nil {
-					return err
-				}
-			}
+	}
+	logs, err := s.evm.FilterLogs(ctx, ethereum.FilterQuery{
+		FromBlock: big.NewInt(int64(from)),
+		ToBlock:   big.NewInt(int64(to)),
+		Addresses: normalizeTokenContractAddresses(s.cfg.TokenContracts),
+		Topics:    [][]common.Hash{{erc20TransferTopic}},
+	})
+	if err != nil {
+		return err
+	}
+	for i := range logs {
+		lg := logs[i]
+		if lg.Removed || len(lg.Topics) < 3 || len(lg.Data) != 32 {
+			continue
+		}
+		amount := new(big.Int).SetBytes(lg.Data)
+		if amount.Sign() <= 0 {
+			continue
+		}
+		toAddr := common.BytesToAddress(lg.Topics[2].Bytes()[12:]).Hex()
+		if _, ok := depositAddressSet[strings.ToLower(strings.TrimSpace(toAddr))]; !ok {
+			continue
+		}
+		_, err = s.repo.InsertApplyEvent(ctx, repo.ChainEventInput{
+			Chain:                s.cfg.Chain,
+			EventType:            chainmodel.EventTypeTransfer,
+			BlockNumber:          lg.BlockNumber,
+			BlockHash:            lg.BlockHash.Hex(),
+			TxHash:               lg.TxHash.Hex(),
+			TxIndex:              uint(lg.TxIndex),
+			LogIndex:             uint(lg.Index),
+			AssetContractAddress: lg.Address.Hex(),
+			FromAddress:          common.BytesToAddress(lg.Topics[1].Bytes()[12:]).Hex(),
+			ToAddress:            toAddr,
+			Amount:               amount,
+			Success:              true,
+		})
+		if err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func normalizeTokenContractAddresses(raw []string) []common.Address {
+	out := make([]common.Address, 0, len(raw))
+	seen := make(map[common.Address]struct{}, len(raw))
+	for _, item := range raw {
+		item = strings.TrimSpace(item)
+		if item == "" || !common.IsHexAddress(item) {
+			continue
+		}
+		addr := common.HexToAddress(item)
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	return out
 }
 
 func (s *EVMIndexer) loadDepositAddressSet(ctx context.Context) (map[string]struct{}, error) {

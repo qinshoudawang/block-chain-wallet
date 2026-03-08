@@ -308,6 +308,20 @@ func (r *WithdrawRepo) ListFinalizedAfterID(ctx context.Context, chain string, l
 	return out, err
 }
 
+func (r *WithdrawRepo) ListConfirmedBetween(ctx context.Context, chain string, from time.Time, to time.Time) ([]withdrawmodel.WithdrawOrder, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("withdraw repo not configured")
+	}
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	var out []withdrawmodel.WithdrawOrder
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND status = ? AND confirmed_at IS NOT NULL AND confirmed_at > ? AND confirmed_at <= ?",
+			chain, withdrawmodel.StatusCONFIRMED, from, to).
+		Order("confirmed_at ASC, id ASC").
+		Find(&out).Error
+	return out, err
+}
+
 func (r *WithdrawRepo) ListReorgAffectedAfterID(ctx context.Context, chain string, fromBlock uint64, lastID uint64, limit int) ([]withdrawmodel.WithdrawOrder, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("withdraw repo not configured")

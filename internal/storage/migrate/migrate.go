@@ -32,6 +32,7 @@ var resetTables = []string{
 	"sweep_orders",
 	"onchain_ledger_reconciliations",
 	"business_flow_reconciliations",
+	"balance_delta_reconciliations",
 	"onchain_ledger_reconciliation_logs",
 }
 
@@ -55,6 +56,7 @@ func All(db *gorm.DB) error {
 		&sweepmodel.SweepOrder{},
 		&reconcilemodel.OnchainLedgerReconciliation{},
 		&reconcilemodel.BusinessFlowReconciliation{},
+		&reconcilemodel.BalanceDeltaReconciliation{},
 		&reconcilemodel.OnchainLedgerReconciliationLog{},
 	); err != nil {
 		return err

@@ -42,12 +42,108 @@ type FlowReconciliationUpsertInput struct {
 	ReconciledAt         time.Time
 }
 
+type BalanceDeltaReconciliationUpsertInput struct {
+	Scope                       string
+	UserID                      string
+	Chain                       string
+	Address                     string
+	AssetContractAddress        string
+	WindowStartedAt             time.Time
+	WindowEndedAt               time.Time
+	StartingLedgerBalanceAmount string
+	EndingLedgerBalanceAmount   string
+	ExpectedDeltaAmount         string
+	ActualDeltaAmount           string
+	DeltaDiffAmount             string
+	ReconciliationStatus        string
+	HasMismatch                 bool
+	LastErrorMessage            string
+	ReconciledAt                time.Time
+}
+
 type ReconcileRepo struct {
 	db *gorm.DB
 }
 
 func NewReconcileRepo(db *gorm.DB) *ReconcileRepo {
 	return &ReconcileRepo{db: db}
+}
+
+func (r *ReconcileRepo) ListLatestOnchainLogs(
+	ctx context.Context,
+	scope string,
+	chain string,
+	address string,
+	assetContractAddress string,
+	limit int,
+) ([]reconcilemodel.OnchainLedgerReconciliationLog, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("reconcile repo not configured")
+	}
+	if limit <= 0 {
+		limit = 2
+	}
+	var out []reconcilemodel.OnchainLedgerReconciliationLog
+	err := r.db.WithContext(ctx).
+		Where("scope = ? AND chain = ? AND address = ? AND asset_contract_address = ?",
+			strings.ToUpper(strings.TrimSpace(scope)),
+			strings.ToLower(strings.TrimSpace(chain)),
+			strings.TrimSpace(address),
+			strings.TrimSpace(assetContractAddress),
+		).
+		Order("reconciled_at DESC, id DESC").
+		Limit(limit).
+		Find(&out).Error
+	return out, err
+}
+
+func (r *ReconcileRepo) UpsertBalanceDeltaReconciliation(ctx context.Context, in BalanceDeltaReconciliationUpsertInput) error {
+	if r == nil || r.db == nil {
+		return errors.New("reconcile repo not configured")
+	}
+	rec := reconcilemodel.BalanceDeltaReconciliation{
+		Scope:                       strings.ToUpper(strings.TrimSpace(in.Scope)),
+		UserID:                      strings.TrimSpace(in.UserID),
+		Chain:                       strings.ToLower(strings.TrimSpace(in.Chain)),
+		Address:                     strings.TrimSpace(in.Address),
+		AssetContractAddress:        strings.TrimSpace(in.AssetContractAddress),
+		WindowStartedAt:             in.WindowStartedAt,
+		WindowEndedAt:               in.WindowEndedAt,
+		StartingLedgerBalanceAmount: strings.TrimSpace(in.StartingLedgerBalanceAmount),
+		EndingLedgerBalanceAmount:   strings.TrimSpace(in.EndingLedgerBalanceAmount),
+		ExpectedDeltaAmount:         strings.TrimSpace(in.ExpectedDeltaAmount),
+		ActualDeltaAmount:           strings.TrimSpace(in.ActualDeltaAmount),
+		DeltaDiffAmount:             strings.TrimSpace(in.DeltaDiffAmount),
+		ReconciliationStatus:        strings.ToUpper(strings.TrimSpace(in.ReconciliationStatus)),
+		HasMismatch:                 in.HasMismatch,
+		LastErrorMessage:            strings.TrimSpace(in.LastErrorMessage),
+		ReconciledAt:                in.ReconciledAt,
+	}
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "scope"},
+				{Name: "chain"},
+				{Name: "address"},
+				{Name: "asset_contract_address"},
+				{Name: "window_started_at"},
+				{Name: "window_ended_at"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"user_id",
+				"starting_ledger_balance_amount",
+				"ending_ledger_balance_amount",
+				"expected_delta_amount",
+				"actual_delta_amount",
+				"delta_diff_amount",
+				"reconciliation_status",
+				"has_mismatch",
+				"last_error_message",
+				"reconciled_at",
+				"updated_at",
+			}),
+		}).
+		Create(&rec).Error
 }
 
 func (r *ReconcileRepo) UpsertOnchainReconciliation(ctx context.Context, in OnchainReconciliationUpsertInput) error {

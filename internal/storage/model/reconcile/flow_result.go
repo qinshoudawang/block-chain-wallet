@@ -7,6 +7,7 @@ const (
 	FlowSourceWithdraw = "WITHDRAW"
 	FlowSourceSweep    = "SWEEP"
 	FlowSourceTopUp    = "TOPUP"
+	FlowSourceHotDelta = "HOT_DELTA"
 
 	FlowStatusMatch    = "MATCH"
 	FlowStatusMissing  = "MISSING"
