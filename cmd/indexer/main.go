@@ -9,7 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	btcchain "wallet-system/internal/chain/btc"
 	evmchain "wallet-system/internal/chain/evm"
+	btcindex "wallet-system/internal/chainindex/btc"
 	evmindex "wallet-system/internal/chainindex/evm"
 	"wallet-system/internal/config/env"
 	"wallet-system/internal/helpers"
@@ -30,18 +32,46 @@ func main() {
 	go handleShutdown(cancel)
 
 	db := initGorm()
-	evmProf, err := env.LoadEVMProfileFromEnv()
+	repos := initRepos(db)
+	btcCleanup := startBTCIndexer(ctx, repos)
+	defer btcCleanup()
+	evmCleanup := startEVMIndexer(ctx, repos)
+	defer evmCleanup()
+	<-ctx.Done()
+}
+
+type repos struct {
+	chain    *repo.ChainRepo
+	deposit  *repo.DepositRepo
+	address  *repo.AddressRepo
+	withdraw *repo.WithdrawRepo
+	sweep    *repo.SweepRepo
+	ledger   *repo.LedgerRepo
+}
+
+func initRepos(db *gorm.DB) repos {
+	return repos{
+		chain:    repo.NewChainRepo(db),
+		deposit:  repo.NewDepositRepo(db),
+		address:  repo.NewAddressRepo(db),
+		withdraw: repo.NewWithdrawRepo(db),
+		sweep:    repo.NewSweepRepo(db),
+		ledger:   repo.NewLedgerRepo(db),
+	}
+}
+
+func startEVMIndexer(ctx context.Context, repos repos) func() {
+	prof, err := env.LoadEVMProfileFromEnv()
 	if err != nil {
 		log.Fatalf("invalid evm profile: %v", err)
 	}
-	evmCli, err := evmchain.NewClient(evmProf.RPC)
+	client, err := evmchain.NewClient(prof.RPC)
 	if err != nil {
-		log.Fatalf("init evm client failed chain=%s err=%v", evmProf.Chain, err)
+		log.Fatalf("init evm client failed chain=%s err=%v", prof.Chain, err)
 	}
-	defer evmCli.Close()
 
 	cfg := evmindex.EVMIndexerConfig{
-		Chain:          evmProf.Chain,
+		Chain:          prof.Chain,
 		TokenContracts: parseCSVEnv("EVM_TOKEN_CONTRACTS"),
 		Confirmations:  uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)),
 		PollInterval:   time.Duration(helpers.ParseIntEnv("DEPOSIT_EVM_POLL_SEC", 8)) * time.Second,
@@ -49,18 +79,43 @@ func main() {
 		StartBlock:     uint64(helpers.ParseIntEnv("DEPOSIT_EVM_START_BLOCK", 0)),
 	}
 
-	chainRepo := repo.NewChainRepo(db)
-	depositRepo := repo.NewDepositRepo(db)
-	addressRepo := repo.NewAddressRepo(db)
-	withdrawRepo := repo.NewWithdrawRepo(db)
-	sweepRepo := repo.NewSweepRepo(db)
-	ledgerRepo := repo.NewLedgerRepo(db)
-
 	log.Printf("[indexer] starting evm chain index chain=%s contracts=%d confirmations=%d", cfg.Chain, len(cfg.TokenContracts), cfg.Confirmations)
-	go evmindex.NewEVMDepositProjector(cfg.Chain, chainRepo, depositRepo, addressRepo, 3*time.Second).Run(ctx)
-	go evmindex.NewEVMWithdrawProjector(cfg.Chain, cfg.Confirmations, chainRepo, withdrawRepo, ledgerRepo, evmCli, 3*time.Second).Run(ctx)
-	go evmindex.NewEVMSweepProjector(cfg.Chain, cfg.Confirmations, chainRepo, sweepRepo, evmCli, 3*time.Second).Run(ctx)
-	evmindex.NewEVMIndexer(chainRepo, addressRepo, evmCli, cfg).Run(ctx)
+	go evmindex.NewEVMDepositProjector(cfg.Chain, cfg.Confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
+	go evmindex.NewEVMWithdrawProjector(cfg.Chain, cfg.Confirmations, repos.chain, repos.withdraw, repos.ledger, client, 3*time.Second).Run(ctx)
+	go evmindex.NewEVMSweepProjector(cfg.Chain, cfg.Confirmations, repos.chain, repos.sweep, client, 3*time.Second).Run(ctx)
+	go evmindex.NewEVMIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
+	return func() { client.Close() }
+}
+
+func startBTCIndexer(ctx context.Context, repos repos) func() {
+	prof, ok, err := env.LoadBTCProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid btc profile: %v", err)
+	}
+	if !ok {
+		return func() {}
+	}
+	client, err := btcchain.NewClient(btcchain.Config{
+		Host:       prof.Host,
+		DisableTLS: prof.DisableTLS,
+		Params:     prof.Params,
+	})
+	if err != nil {
+		log.Fatalf("init btc client failed chain=%s err=%v", prof.Chain, err)
+	}
+
+	cfg := btcindex.IndexerConfig{
+		Chain:         prof.Chain,
+		Confirmations: uint64(helpers.ParseIntEnv("DEPOSIT_BTC_CONFIRMATIONS", 2)),
+		PollInterval:  time.Duration(helpers.ParseIntEnv("DEPOSIT_BTC_POLL_SEC", 15)) * time.Second,
+		BatchBlocks:   uint64(helpers.ParseIntEnv("DEPOSIT_BTC_BATCH_BLOCKS", 20)),
+		StartBlock:    uint64(helpers.ParseIntEnv("DEPOSIT_BTC_START_BLOCK", 0)),
+	}
+
+	log.Printf("[indexer] starting btc chain index chain=%s confirmations=%d", cfg.Chain, cfg.Confirmations)
+	go btcindex.NewDepositProjector(cfg.Chain, cfg.Confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
+	go btcindex.NewIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
+	return func() { client.Close() }
 }
 
 func initGorm() *gorm.DB {

@@ -35,14 +35,16 @@ type EVMIndexer struct {
 	evm         *evmchain.Client
 	repo        *repo.ChainRepo
 	addressRepo *repo.AddressRepo
+	depositRepo *repo.DepositRepo
 }
 
-func NewEVMIndexer(chainRepo *repo.ChainRepo, addressRepo *repo.AddressRepo, client *evmchain.Client, cfg EVMIndexerConfig) *EVMIndexer {
+func NewEVMIndexer(chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, addressRepo *repo.AddressRepo, client *evmchain.Client, cfg EVMIndexerConfig) *EVMIndexer {
 	return &EVMIndexer{
 		cfg:         cfg,
 		evm:         client,
 		repo:        chainRepo,
 		addressRepo: addressRepo,
+		depositRepo: depositRepo,
 	}
 }
 
@@ -80,7 +82,7 @@ func (s *EVMIndexer) scanOnce(ctx context.Context) {
 	if !s.handleReorgIfNeeded(ctx, cur.NextBlockNumber) {
 		return
 	}
-	finalized := latest - s.cfg.Confirmations
+	finalized := latest
 	if cur.NextBlockNumber > finalized {
 		return
 	}
@@ -93,12 +95,12 @@ func (s *EVMIndexer) scanOnce(ctx context.Context) {
 	if to-from+1 > batch {
 		to = from + batch - 1
 	}
-	addressSet, err := s.loadDepositAddressSet(ctx)
+	addressMap, err := s.loadDepositAddressMap(ctx)
 	if err != nil {
-		log.Printf("[chain-indexer-evm] load deposit address set failed chain=%s err=%v", s.cfg.Chain, err)
+		log.Printf("[chain-indexer-evm] load deposit addresses failed chain=%s err=%v", s.cfg.Chain, err)
 		return
 	}
-	if err := s.indexRange(ctx, from, to, addressSet); err != nil {
+	if err := s.indexRange(ctx, from, to, addressMap); err != nil {
 		log.Printf("[chain-indexer-evm] index range failed chain=%s from=%d to=%d err=%v", s.cfg.Chain, from, to, err)
 		return
 	}
@@ -119,9 +121,6 @@ func (s *EVMIndexer) prepareState(ctx context.Context) (*chainmodel.IndexCursor,
 	if err != nil {
 		log.Printf("[chain-indexer-evm] latest height failed chain=%s err=%v", s.cfg.Chain, err)
 		return nil, 0, false
-	}
-	if latest < s.cfg.Confirmations {
-		return cur, latest, false
 	}
 	return cur, latest, true
 }
@@ -152,7 +151,7 @@ func (s *EVMIndexer) detectReorgFromCursor(ctx context.Context, cursor uint64) (
 		return 0, nil
 	}
 	check := cursor - 1
-	localHash, ok, err := s.repo.GetBlockHash(ctx, s.cfg.Chain, check)
+	localHash, ok, err := s.repo.GetEVMBlockHash(ctx, s.cfg.Chain, check)
 	if err != nil || !ok {
 		return 0, err
 	}
@@ -164,7 +163,7 @@ func (s *EVMIndexer) detectReorgFromCursor(ctx context.Context, cursor uint64) (
 		return 0, nil
 	}
 	for b := check; ; b-- {
-		h, ok, err := s.repo.GetBlockHash(ctx, s.cfg.Chain, b)
+		h, ok, err := s.repo.GetEVMBlockHash(ctx, s.cfg.Chain, b)
 		if err != nil {
 			return 0, err
 		}
@@ -184,13 +183,13 @@ func (s *EVMIndexer) detectReorgFromCursor(ctx context.Context, cursor uint64) (
 	}
 }
 
-func (s *EVMIndexer) indexRange(ctx context.Context, from uint64, to uint64, depositAddressSet map[string]struct{}) error {
+func (s *EVMIndexer) indexRange(ctx context.Context, from uint64, to uint64, depositAddressMap map[string]string) error {
 	for n := from; n <= to; n++ {
 		head, err := s.evm.HeaderByNumber(ctx, big.NewInt(int64(n)))
 		if err != nil {
 			return err
 		}
-		if err := s.repo.UpsertBlock(ctx, s.cfg.Chain, n, head.Hash().Hex(), head.ParentHash.Hex()); err != nil {
+		if err := s.repo.UpsertEVMBlock(ctx, s.cfg.Chain, n, head.Hash().Hex(), head.ParentHash.Hex()); err != nil {
 			return err
 		}
 	}
@@ -213,26 +212,26 @@ func (s *EVMIndexer) indexRange(ctx context.Context, from uint64, to uint64, dep
 			continue
 		}
 		toAddr := common.BytesToAddress(lg.Topics[2].Bytes()[12:]).Hex()
-		if _, ok := depositAddressSet[strings.ToLower(strings.TrimSpace(toAddr))]; !ok {
+		userID, ok := depositAddressMap[strings.ToLower(strings.TrimSpace(toAddr))]
+		if !ok {
 			continue
 		}
-		_, err = s.repo.InsertApplyEvent(ctx, repo.ChainEventInput{
+		err = s.depositRepo.CreatePending(ctx, repo.DepositUpsertInput{
 			Chain:                s.cfg.Chain,
-			EventType:            chainmodel.EventTypeTransfer,
-			BlockNumber:          lg.BlockNumber,
-			BlockHash:            lg.BlockHash.Hex(),
 			TxHash:               lg.TxHash.Hex(),
-			TxIndex:              uint(lg.TxIndex),
 			LogIndex:             uint(lg.Index),
-			AssetContractAddress: lg.Address.Hex(),
+			BlockNumber:          lg.BlockNumber,
+			TokenContractAddress: lg.Address.Hex(),
+			UserID:               userID,
 			FromAddress:          common.BytesToAddress(lg.Topics[1].Bytes()[12:]).Hex(),
 			ToAddress:            toAddr,
 			Amount:               amount,
-			Success:              true,
 		})
 		if err != nil {
 			return err
 		}
+		log.Printf("[chain-indexer-evm] matched pending deposit chain=%s block=%d tx=%s log_index=%d to=%s amount=%s",
+			s.cfg.Chain, lg.BlockNumber, lg.TxHash.Hex(), lg.Index, toAddr, amount.String())
 	}
 	return nil
 }
@@ -255,21 +254,21 @@ func normalizeTokenContractAddresses(raw []string) []common.Address {
 	return out
 }
 
-func (s *EVMIndexer) loadDepositAddressSet(ctx context.Context) (map[string]struct{}, error) {
+func (s *EVMIndexer) loadDepositAddressMap(ctx context.Context) (map[string]string, error) {
 	if s == nil || s.addressRepo == nil {
-		return map[string]struct{}{}, nil
+		return map[string]string{}, nil
 	}
 	rows, err := s.addressRepo.ListByChain(ctx, s.cfg.Chain)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]struct{}, len(rows))
+	out := make(map[string]string, len(rows))
 	for i := range rows {
 		addr := strings.ToLower(strings.TrimSpace(rows[i].Address))
 		if addr == "" {
 			continue
 		}
-		out[addr] = struct{}{}
+		out[addr] = strings.TrimSpace(rows[i].UserID)
 	}
 	return out, nil
 }

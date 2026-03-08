@@ -8,6 +8,7 @@ import (
 	"time"
 
 	evmchain "wallet-system/internal/chain/evm"
+	chainmodel "wallet-system/internal/storage/model/chain"
 	withdrawmodel "wallet-system/internal/storage/model/withdraw"
 	"wallet-system/internal/storage/repo"
 
@@ -205,3 +206,78 @@ func (w *EVMWithdrawProjector) reconcileOrder(ctx context.Context, rec *withdraw
 	)
 	return err
 }
+
+func finalizedHeight(ctx context.Context, evm *evmchain.Client, confirmations uint64) (uint64, bool) {
+	if evm == nil {
+		return 0, false
+	}
+	latest, err := evm.LatestHeight(ctx)
+	if err != nil {
+		log.Printf("[evm-tx-projector] latest height failed err=%v", err)
+		return 0, false
+	}
+	if latest < confirmations {
+		return 0, false
+	}
+	return latest - confirmations, true
+}
+
+func chainEventToModel(in repo.ChainEventInput) chainmodel.ChainEvent {
+	amount := "0"
+	if in.Amount != nil {
+		amount = in.Amount.String()
+	}
+	fee := "0"
+	if in.FeeAmount != nil {
+		fee = in.FeeAmount.String()
+	}
+	return chainmodel.ChainEvent{
+		Chain:                   in.Chain,
+		EventType:               in.EventType,
+		Action:                  chainmodel.EventActionApply,
+		BlockNumber:             in.BlockNumber,
+		BlockHash:               in.BlockHash,
+		TxHash:                  in.TxHash,
+		TxIndex:                 in.TxIndex,
+		LogIndex:                in.LogIndex,
+		AssetContractAddress:    in.AssetContractAddress,
+		FromAddress:             in.FromAddress,
+		ToAddress:               in.ToAddress,
+		Amount:                  amount,
+		FeeAssetContractAddress: in.FeeAssetContractAddress,
+		FeeAmount:               fee,
+		Success:                 in.Success,
+	}
+}
+
+type executionMatchTarget interface {
+	GetSourceAddress() string
+	GetTargetAddress() string
+	GetAssetContractAddress() string
+	GetAmount() string
+}
+
+func matchesExecutionTarget(target executionMatchTarget, ev chainmodel.ChainEvent) bool {
+	if !strings.EqualFold(strings.TrimSpace(target.GetSourceAddress()), strings.TrimSpace(ev.FromAddress)) {
+		return false
+	}
+	if to := strings.TrimSpace(target.GetTargetAddress()); to != "" && !strings.EqualFold(to, strings.TrimSpace(ev.ToAddress)) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(target.GetAssetContractAddress()), strings.TrimSpace(ev.AssetContractAddress)) {
+		return false
+	}
+	if ev.Success && strings.TrimSpace(target.GetAmount()) != strings.TrimSpace(ev.Amount) {
+		return false
+	}
+	return true
+}
+
+type withdrawExecutionTarget struct {
+	rec withdrawmodel.WithdrawOrder
+}
+
+func (t withdrawExecutionTarget) GetSourceAddress() string        { return t.rec.FromAddr }
+func (t withdrawExecutionTarget) GetTargetAddress() string        { return t.rec.ToAddr }
+func (t withdrawExecutionTarget) GetAssetContractAddress() string { return t.rec.TokenContractAddress }
+func (t withdrawExecutionTarget) GetAmount() string               { return t.rec.Amount }

@@ -35,6 +35,7 @@ type Confirmer struct {
 	utxoReserve *utxoreserve.Manager
 	redis       *redis.Client
 	thresholds  confirmThresholds
+	poll        time.Duration
 	rbfStuckFor time.Duration
 	lockTTL     time.Duration
 	withdrawRPC withdrawpb.WithdrawServiceClient
@@ -59,6 +60,7 @@ func NewConfirmer(deps ConfirmerDeps) *Confirmer {
 		utxoReserve: deps.UTXOReserve,
 		redis:       deps.Redis,
 		thresholds:  loadConfirmThresholds(),
+		poll:        loadConfirmerPollInterval(),
 		rbfStuckFor: loadRBFStuckThreshold(),
 		lockTTL:     loadConfirmerLockTTL(),
 		withdrawRPC: deps.WithdrawRPC,
@@ -70,7 +72,11 @@ func RunConfirmer(ctx context.Context, deps ConfirmerDeps) {
 }
 
 func (c *Confirmer) Run(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
+	poll := c.poll
+	if poll <= 0 {
+		poll = 30 * time.Second
+	}
+	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 
 	for {
@@ -334,6 +340,14 @@ func loadConfirmerLockTTL() time.Duration {
 	sec := helpers.ParseIntEnv("BROADCAST_CONFIRMER_LOCK_TTL_SEC", 20)
 	if sec <= 0 {
 		return 20 * time.Second
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func loadConfirmerPollInterval() time.Duration {
+	sec := helpers.ParseIntEnv("BROADCAST_CONFIRMER_POLL_SEC", 30)
+	if sec <= 0 {
+		return 30 * time.Second
 	}
 	return time.Duration(sec) * time.Second
 }

@@ -23,6 +23,13 @@ type Client struct {
 	httpBase   string
 }
 
+type Block struct {
+	Hash       string
+	Height     uint64
+	ParentHash string
+	TxIDs      []string
+}
+
 type UTXO struct {
 	TxID          string
 	Vout          uint32

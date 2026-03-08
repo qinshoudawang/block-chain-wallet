@@ -46,6 +46,12 @@ type esploraTxStatus struct {
 	BlockTime   int64  `json:"block_time"`
 }
 
+type esploraBlockRow struct {
+	ID                string `json:"id"`
+	Height            int64  `json:"height"`
+	PreviousBlockHash string `json:"previousblockhash"`
+}
+
 type esploraTxRow struct {
 	TxID     string          `json:"txid"`
 	Version  uint32          `json:"version"`
@@ -106,6 +112,46 @@ func (c *Client) fetchTipHeight(ctx context.Context) (uint64, error) {
 		return 0, err
 	}
 	return strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
+}
+
+func (c *Client) fetchBlockHashByHeight(ctx context.Context, height uint64) (string, error) {
+	raw, err := c.httpRequest(ctx, http.MethodGet, "/block-height/"+strconv.FormatUint(height, 10), "", nil)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
+}
+
+func (c *Client) fetchBlock(ctx context.Context, hash string) (*esploraBlockRow, error) {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, errors.New("block hash is required")
+	}
+	raw, err := c.httpRequest(ctx, http.MethodGet, "/block/"+url.PathEscape(hash), "", nil)
+	if err != nil {
+		return nil, err
+	}
+	var row esploraBlockRow
+	if err := json.Unmarshal(raw, &row); err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+func (c *Client) fetchBlockTxIDs(ctx context.Context, hash string) ([]string, error) {
+	hash = strings.TrimSpace(hash)
+	if hash == "" {
+		return nil, errors.New("block hash is required")
+	}
+	raw, err := c.httpRequest(ctx, http.MethodGet, "/block/"+url.PathEscape(hash)+"/txids", "", nil)
+	if err != nil {
+		return nil, err
+	}
+	var rows []string
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (c *Client) fetchTransaction(ctx context.Context, txid string) (*esploraTxRow, error) {

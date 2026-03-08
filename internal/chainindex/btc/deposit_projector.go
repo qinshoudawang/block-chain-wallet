@@ -1,4 +1,4 @@
-package evmindex
+package btcindex
 
 import (
 	"context"
@@ -7,26 +7,26 @@ import (
 	"strings"
 	"time"
 
-	evmchain "wallet-system/internal/chain/evm"
+	btcchain "wallet-system/internal/chain/btc"
 	"wallet-system/internal/storage/repo"
 )
 
-type EVMDepositProjector struct {
+type DepositProjector struct {
 	chainRepo     *repo.ChainRepo
 	depositRepo   *repo.DepositRepo
-	evm           *evmchain.Client
+	btc           *btcchain.Client
 	chain         string
 	poll          time.Duration
 	confirmations uint64
 	reorgCursor   string
 }
 
-func NewEVMDepositProjector(chain string, confirmations uint64, chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, evm *evmchain.Client, poll time.Duration) *EVMDepositProjector {
+func NewDepositProjector(chain string, confirmations uint64, chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, btc *btcchain.Client, poll time.Duration) *DepositProjector {
 	chain = strings.ToLower(strings.TrimSpace(chain))
-	return &EVMDepositProjector{
+	return &DepositProjector{
 		chainRepo:     chainRepo,
 		depositRepo:   depositRepo,
-		evm:           evm,
+		btc:           btc,
 		chain:         chain,
 		poll:          poll,
 		confirmations: confirmations,
@@ -34,8 +34,8 @@ func NewEVMDepositProjector(chain string, confirmations uint64, chainRepo *repo.
 	}
 }
 
-func (p *EVMDepositProjector) Run(ctx context.Context) {
-	if p == nil || p.chainRepo == nil || p.depositRepo == nil || p.evm == nil {
+func (p *DepositProjector) Run(ctx context.Context) {
+	if p == nil || p.chainRepo == nil || p.depositRepo == nil || p.btc == nil {
 		return
 	}
 	poll := p.poll
@@ -56,13 +56,13 @@ func (p *EVMDepositProjector) Run(ctx context.Context) {
 	}
 }
 
-func (p *EVMDepositProjector) tick(ctx context.Context) {
-	latest, err := p.evm.LatestHeight(ctx)
+func (p *DepositProjector) tick(ctx context.Context) {
+	latest, err := p.btc.LatestHeightContext(ctx)
 	if err != nil {
 		return
 	}
 	if err := p.handleReorgs(ctx); err != nil {
-		log.Printf("[deposit-projector-evm] handle reorgs failed chain=%s err=%v", p.chain, err)
+		log.Printf("[deposit-projector-btc] handle reorgs failed chain=%s err=%v", p.chain, err)
 		return
 	}
 	maxBlock, ok := confirmableDepositBlock(latest, p.confirmations)
@@ -91,13 +91,13 @@ func (p *EVMDepositProjector) tick(ctx context.Context) {
 			Amount:               amount,
 		})
 		if err == nil {
-			log.Printf("[deposit-projector-evm] confirmed deposit chain=%s tx=%s log_index=%d to=%s amount=%s",
+			log.Printf("[deposit-projector-btc] confirmed deposit chain=%s tx=%s vout=%d to=%s amount=%s",
 				rec.Chain, rec.TxHash, rec.LogIndex, rec.ToAddress, rec.Amount)
 		}
 	}
 }
 
-func (p *EVMDepositProjector) handleReorgs(ctx context.Context) error {
+func (p *DepositProjector) handleReorgs(ctx context.Context) error {
 	cur, err := p.chainRepo.GetOrCreateProjectorCursor(ctx, p.reorgCursor)
 	if err != nil {
 		return err
@@ -121,7 +121,7 @@ func (p *EVMDepositProjector) handleReorgs(ctx context.Context) error {
 	return p.chainRepo.SaveProjectorCursor(ctx, p.reorgCursor, maxID)
 }
 
-func (p *EVMDepositProjector) revertFromBlock(ctx context.Context, fromBlock uint64) error {
+func (p *DepositProjector) revertFromBlock(ctx context.Context, fromBlock uint64) error {
 	var lastID uint64
 	for {
 		items, err := p.depositRepo.ListReorgAffectedAfterID(ctx, p.chain, fromBlock, lastID, 500)
@@ -137,7 +137,7 @@ func (p *EVMDepositProjector) revertFromBlock(ctx context.Context, fromBlock uin
 			if err := p.depositRepo.RevertByChainRef(ctx, rec.Chain, rec.TxHash, rec.LogIndex); err != nil {
 				return err
 			}
-			log.Printf("[deposit-projector-evm] reverted deposit chain=%s tx=%s log_index=%d",
+			log.Printf("[deposit-projector-btc] reverted deposit chain=%s tx=%s vout=%d",
 				rec.Chain, rec.TxHash, rec.LogIndex)
 		}
 	}

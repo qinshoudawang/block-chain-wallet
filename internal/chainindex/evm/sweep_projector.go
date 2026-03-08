@@ -201,3 +201,12 @@ func (w *EVMSweepProjector) reconcileOrder(ctx context.Context, rec *sweepmodel.
 	)
 	return err
 }
+
+type sweepExecutionTarget struct {
+	rec sweepmodel.SweepOrder
+}
+
+func (t sweepExecutionTarget) GetSourceAddress() string        { return t.rec.FromAddress }
+func (t sweepExecutionTarget) GetTargetAddress() string        { return t.rec.ToAddress }
+func (t sweepExecutionTarget) GetAssetContractAddress() string { return t.rec.AssetContractAddress }
+func (t sweepExecutionTarget) GetAmount() string               { return t.rec.Amount }

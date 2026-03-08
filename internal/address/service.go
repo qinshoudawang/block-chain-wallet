@@ -72,7 +72,7 @@ func (s *AddressService) CreateUserAddress(ctx context.Context, userID string, c
 				{Name: "asset_contract_address"},
 			},
 			DoUpdates: clause.Assignments(map[string]any{
-				"user_id": gorm.Expr("CASE WHEN user_id = '' THEN ? ELSE user_id END", strings.TrimSpace(userID)),
+				"user_id": gorm.Expr("CASE WHEN ledger_accounts.user_id = '' THEN ? ELSE ledger_accounts.user_id END", strings.TrimSpace(userID)),
 			}),
 		}).Create(&ledgermodel.LedgerAccount{
 			UserID:               strings.TrimSpace(userID),

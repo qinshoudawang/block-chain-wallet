@@ -56,7 +56,44 @@ func (r *DepositRepo) ListFinalizedAfterID(ctx context.Context, chain string, la
 	return out, err
 }
 
-func (r *DepositRepo) CreateConfirmedAndCredit(ctx context.Context, in DepositUpsertInput) error {
+func (r *DepositRepo) ListPendingConfirmable(ctx context.Context, chain string, maxBlock uint64, limit int) ([]depositmodel.DepositRecord, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("deposit repo not configured")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	var out []depositmodel.DepositRecord
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND status = ? AND block_number <= ?", chain, depositmodel.StatusPending, maxBlock).
+		Order("block_number ASC, id ASC").
+		Limit(limit).
+		Find(&out).Error
+	return out, err
+}
+
+func (r *DepositRepo) ListReorgAffectedAfterID(ctx context.Context, chain string, fromBlock uint64, lastID uint64, limit int) ([]depositmodel.DepositRecord, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("deposit repo not configured")
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	chain = strings.ToLower(strings.TrimSpace(chain))
+	var out []depositmodel.DepositRecord
+	err := r.db.WithContext(ctx).
+		Where("chain = ? AND block_number >= ? AND id > ? AND status IN ?", chain, fromBlock, lastID, []depositmodel.Status{
+			depositmodel.StatusPending,
+			depositmodel.StatusConfirmed,
+		}).
+		Order("id ASC").
+		Limit(limit).
+		Find(&out).Error
+	return out, err
+}
+
+func (r *DepositRepo) CreatePending(ctx context.Context, in DepositUpsertInput) error {
 	if r == nil || r.db == nil {
 		return errors.New("deposit repo not configured")
 	}
@@ -78,7 +115,6 @@ func (r *DepositRepo) CreateConfirmedAndCredit(ctx context.Context, in DepositUp
 			Where("chain = ? AND tx_hash = ? AND log_index = ?", in.Chain, in.TxHash, in.LogIndex).
 			First(&rec).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			now := time.Now()
 			rec = depositmodel.DepositRecord{
 				Chain:                in.Chain,
 				TxHash:               in.TxHash,
@@ -90,18 +126,64 @@ func (r *DepositRepo) CreateConfirmedAndCredit(ctx context.Context, in DepositUp
 				FromAddress:          in.FromAddress,
 				Amount:               in.Amount.String(),
 				Status:               depositmodel.StatusPending,
-				ConfirmedAt:          &now,
 			}
 			if err := tx.Create(&rec).Error; err != nil {
 				return err
 			}
-		} else if err != nil {
+			return nil
+		}
+		if err != nil {
 			return err
 		}
 		if rec.Status == depositmodel.StatusConfirmed {
 			return nil
 		}
-		if rec.Status == depositmodel.StatusReverted {
+		now := time.Now()
+		return tx.Model(&depositmodel.DepositRecord{}).
+			Where("id = ? AND status IN ?", rec.ID, []depositmodel.Status{
+				depositmodel.StatusPending,
+				depositmodel.StatusReverted,
+			}).
+			Updates(map[string]any{
+				"block_number":           in.BlockNumber,
+				"token_contract_address": in.TokenContractAddress,
+				"user_id":                in.UserID,
+				"from_address":           in.FromAddress,
+				"to_address":             in.ToAddress,
+				"amount":                 in.Amount.String(),
+				"status":                 depositmodel.StatusPending,
+				"confirmed_at":           nil,
+				"reverted_at":            nil,
+				"updated_at":             now,
+			}).Error
+	})
+}
+
+func (r *DepositRepo) ConfirmPendingAndCredit(ctx context.Context, in DepositUpsertInput) error {
+	if r == nil || r.db == nil {
+		return errors.New("deposit repo not configured")
+	}
+	if in.Amount == nil || in.Amount.Sign() <= 0 {
+		return errors.New("invalid deposit amount")
+	}
+	in.Chain = strings.ToLower(strings.TrimSpace(in.Chain))
+	in.TxHash = strings.TrimSpace(in.TxHash)
+	in.TokenContractAddress = strings.TrimSpace(in.TokenContractAddress)
+	in.UserID = strings.TrimSpace(in.UserID)
+	in.FromAddress = strings.TrimSpace(in.FromAddress)
+	in.ToAddress = strings.TrimSpace(in.ToAddress)
+	if in.Chain == "" || in.TxHash == "" || in.UserID == "" || in.ToAddress == "" {
+		return errors.New("invalid deposit input")
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rec depositmodel.DepositRecord
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("chain = ? AND tx_hash = ? AND log_index = ?", in.Chain, in.TxHash, in.LogIndex).
+			First(&rec).Error
+		if err != nil {
+			return err
+		}
+		if rec.Status == depositmodel.StatusConfirmed || rec.Status == depositmodel.StatusReverted {
 			return nil
 		}
 		if err := creditUserLedgerByDepositTx(tx, rec, in.Amount); err != nil {

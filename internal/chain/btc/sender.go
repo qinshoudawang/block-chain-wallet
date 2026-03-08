@@ -3,6 +3,7 @@ package btc
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"strings"
 
 	"github.com/btcsuite/btcd/btcjson"
@@ -21,11 +22,52 @@ func (c *Client) LatestHeight() (uint64, error) {
 	return c.fetchTipHeight(context.Background())
 }
 
+func (c *Client) LatestHeightContext(ctx context.Context) (uint64, error) {
+	return c.fetchTipHeight(ctx)
+}
+
+func (c *Client) GetBlockByHeight(ctx context.Context, height uint64) (*Block, error) {
+	hash, err := c.fetchBlockHashByHeight(ctx, height)
+	if err != nil {
+		return nil, err
+	}
+	meta, err := c.fetchBlock(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	txids, err := c.fetchBlockTxIDs(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	out := &Block{
+		Hash:       strings.TrimSpace(meta.ID),
+		Height:     uint64(meta.Height),
+		ParentHash: strings.TrimSpace(meta.PreviousBlockHash),
+		TxIDs:      txids,
+	}
+	if out.Hash == "" {
+		return nil, errors.New("empty btc block hash")
+	}
+	return out, nil
+}
+
+func (c *Client) GetTransaction(ctx context.Context, txHash string) (*btcjson.TxRawResult, error) {
+	row, err := c.fetchTransaction(ctx, txHash)
+	if err != nil {
+		return nil, err
+	}
+	return toTxRawResult(c, row)
+}
+
 func (c *Client) GetRawTransactionVerbose(txHash string) (*btcjson.TxRawResult, error) {
 	row, err := c.fetchTransaction(context.Background(), txHash)
 	if err != nil {
 		return nil, err
 	}
+	return toTxRawResult(c, row)
+}
+
+func toTxRawResult(c *Client, row *esploraTxRow) (*btcjson.TxRawResult, error) {
 	out := &btcjson.TxRawResult{
 		Txid:      row.TxID,
 		Version:   row.Version,

@@ -16,7 +16,8 @@ import (
 
 var resetTables = []string{
 	"withdraw_orders",
-	"indexed_blocks",
+	"evm_indexed_blocks",
+	"btc_indexed_blocks",
 	"index_cursors",
 	"reorg_notices",
 	"chain_events",
@@ -40,7 +41,8 @@ var resetTables = []string{
 func All(db *gorm.DB) error {
 	if err := db.AutoMigrate(
 		&withdrawmodel.WithdrawOrder{},
-		&chainmodel.IndexedBlock{},
+		&chainmodel.EVMIndexedBlock{},
+		&chainmodel.BTCIndexedBlock{},
 		&chainmodel.IndexCursor{},
 		&chainmodel.ReorgNotice{},
 		&chainmodel.ChainEvent{},
