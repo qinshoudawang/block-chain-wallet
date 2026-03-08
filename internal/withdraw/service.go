@@ -54,10 +54,10 @@ type RiskApprover interface {
 }
 
 type Service struct {
-	profiles   map[string]ChainProfile
-	authSecret []byte
-	deps       Deps
-	Producer   *kafka.Producer
+	profiles map[string]ChainProfile
+	auth     auth.Provider
+	deps     Deps
+	Producer *kafka.Producer
 }
 
 type SequenceAllocation struct {
@@ -83,7 +83,7 @@ type SubmitRBFResult struct {
 }
 
 // Lifecycle
-func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, producer *kafka.Producer) *Service {
+func NewService(profiles map[string]ChainProfile, authProvider auth.Provider, deps Deps, producer *kafka.Producer) *Service {
 	if deps.Ledger == nil {
 		panic("ledger repo is required")
 	}
@@ -97,8 +97,8 @@ func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, 
 	if len(profiles) == 0 {
 		panic("at least one chain profile is required")
 	}
-	if len(authSecret) == 0 {
-		panic("auth secret is required")
+	if authProvider == nil {
+		panic("auth provider is required")
 	}
 	normalizedProfiles := make(map[string]ChainProfile, len(profiles))
 	for chain, p := range profiles {
@@ -117,10 +117,10 @@ func NewService(profiles map[string]ChainProfile, authSecret []byte, deps Deps, 
 	}
 
 	return &Service{
-		profiles:   normalizedProfiles,
-		authSecret: authSecret,
-		deps:       deps,
-		Producer:   producer,
+		profiles: normalizedProfiles,
+		auth:     authProvider,
+		deps:     deps,
+		Producer: producer,
 	}
 }
 
@@ -166,7 +166,7 @@ func (s *Service) CreateAndSignTopUpWithdraw(ctx context.Context, in WithdrawInp
 }
 
 func (s *Service) CreateAndSignRBFWithdraw(ctx context.Context, withdrawID string, oldTxHash string) (*SubmitRBFResult, error) {
-	if s == nil || s.deps.Withdraw == nil || s.deps.ChainClient == nil || s.deps.Signer == nil || len(s.authSecret) == 0 {
+	if s == nil || s.deps.Withdraw == nil || s.deps.ChainClient == nil || s.deps.Signer == nil || s.auth == nil {
 		return nil, errors.New("withdraw service not configured for rbf")
 	}
 	st, task, err := flowpkg.Run(ctx, flowpkg.RBFTemplate{
@@ -461,7 +461,7 @@ func (s *Service) signWithdraw(
 ) (*signpb.SignResponse, error) {
 	log.Printf("[withdraw-service] signer rpc start chain=%s withdraw_id=%s request_id=%s from=%s to=%s amount=%s unsigned_size=%d", chain, withdrawID, requestID, fromAddr, toAddr, amount, len(unsignedTx))
 
-	authToken := auth.MakeToken(s.authSecret, auth.TxPayload{
+	authToken, err := auth.MakeTokenWithProvider(ctx, s.auth, auth.TxPayload{
 		WithdrawID: withdrawID,
 		RequestID:  requestID,
 		Chain:      chain,
@@ -470,6 +470,9 @@ func (s *Service) signWithdraw(
 		Amount:     amount,
 		UnsignedTx: unsignedTx,
 	})
+	if err != nil {
+		return nil, err
+	}
 
 	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

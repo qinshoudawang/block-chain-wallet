@@ -14,6 +14,7 @@ import (
 
 	"wallet-system/internal/address"
 	"wallet-system/internal/api"
+	authpkg "wallet-system/internal/auth"
 	btcchain "wallet-system/internal/chain/btc"
 	evmchain "wallet-system/internal/chain/evm"
 	solchain "wallet-system/internal/chain/sol"
@@ -174,9 +175,10 @@ func initWithdrawService(
 	signerCli signpb.SignerServiceClient,
 ) *withdraw.Service {
 	utxoReserveTTL := time.Duration(helpers.ParseIntEnv("BTC_UTXO_RESERVE_TTL_SEC", 7200)) * time.Second
+	authProvider := buildSignerAuthProvider()
 	return withdraw.NewService(
 		chainProfiles,
-		[]byte(helpers.MustEnv("WITHDRAW_AUTH_SECRET")),
+		authProvider,
 		withdraw.Deps{
 			Redis:       rdc.RDB,
 			ChainClient: chainRegistry,
@@ -188,6 +190,22 @@ func initWithdrawService(
 		},
 		producer,
 	)
+}
+
+func buildSignerAuthProvider() authpkg.Provider {
+	if keyID := strings.TrimSpace(helpers.Getenv("SIGNER_AUTH_KMS_KEY_ID", "")); keyID != "" {
+		p, err := authpkg.NewKMSProvider(context.Background(), keyID)
+		if err != nil {
+			log.Fatalf("init signer auth kms provider failed: %v", err)
+		}
+		return p
+	}
+	secret := []byte(helpers.Getenv("WITHDRAW_AUTH_SECRET", helpers.MustEnv("SIGNER_AUTH_SECRET")))
+	p, err := authpkg.NewLocalProvider(secret)
+	if err != nil {
+		log.Fatalf("init signer auth provider failed: %v", err)
+	}
+	return p
 }
 
 func buildChainProfiles() map[string]config.ChainProfile {

@@ -22,17 +22,21 @@ var (
 )
 
 type Service struct {
-	rdb        *redis.Client
-	guard      *idempotency.Guard
-	policy     *policy.PolicyEngine
-	providers  *provider.Registry
-	authSecret []byte
-	deriver    *derivation.Deriver
+	rdb       *redis.Client
+	guard     *idempotency.Guard
+	policy    *policy.PolicyEngine
+	providers *provider.Registry
+	auth      auth.Provider
+	deriver   *derivation.Deriver
 }
 
-func NewService(rdb *redis.Client, providers *provider.Registry, authSecret []byte, mnemonic string, policyEngine *policy.PolicyEngine) *Service {
+func NewService(rdb *redis.Client, providers *provider.Registry, authProvider auth.Provider, mnemonic string, policyEngine *policy.PolicyEngine) *Service {
 	if providers == nil {
 		log.Fatal("signer provider registry is required")
+		return nil
+	}
+	if authProvider == nil {
+		log.Fatal("signer auth provider is required")
 		return nil
 	}
 	deriver, err := derivation.NewDeriver(mnemonic)
@@ -41,12 +45,12 @@ func NewService(rdb *redis.Client, providers *provider.Registry, authSecret []by
 		return nil
 	}
 	return &Service{
-		rdb:        rdb,
-		guard:      idempotency.New(rdb, 30*time.Minute),
-		policy:     policyEngine,
-		providers:  providers,
-		authSecret: authSecret,
-		deriver:    deriver,
+		rdb:       rdb,
+		guard:     idempotency.New(rdb, 30*time.Minute),
+		policy:    policyEngine,
+		providers: providers,
+		auth:      authProvider,
+		deriver:   deriver,
 	}
 }
 
@@ -74,7 +78,7 @@ func (s *Service) SignTransaction(ctx context.Context, req *signpb.SignRequest) 
 	}
 
 	// 3) auth_token 验真（HMAC）
-	if !auth.VerifyToken(s.authSecret, auth.TxPayload{
+	okAuth, err := auth.VerifyTokenWithProvider(ctx, s.auth, auth.TxPayload{
 		WithdrawID: req.WithdrawId,
 		RequestID:  req.RequestId,
 		Chain:      req.Chain,
@@ -82,7 +86,11 @@ func (s *Service) SignTransaction(ctx context.Context, req *signpb.SignRequest) 
 		To:         req.ToAddress,
 		Amount:     req.Amount,
 		UnsignedTx: req.UnsignedTx,
-	}, req.AuthToken) {
+	}, req.AuthToken)
+	if err != nil {
+		return nil, err
+	}
+	if !okAuth {
 		return nil, ErrAuthFailed
 	}
 

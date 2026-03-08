@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	auth "wallet-system/internal/auth"
 	"wallet-system/internal/config"
 	"wallet-system/internal/helpers"
 	"wallet-system/internal/infra/redisx"
@@ -108,10 +109,7 @@ func buildChainProfiles() map[string]config.ChainProfile {
 }
 
 func initSignerService(rdc *redisx.Client, profiles map[string]config.ChainProfile, addressRepo *repo.AddressRepo) *signer.Service {
-	authSecret := []byte(helpers.MustEnv("SIGNER_AUTH_SECRET"))
-	if len(authSecret) == 0 {
-		log.Fatal("SIGNER_AUTH_SECRET is required")
-	}
+	authProvider := buildSignerAuthProvider()
 	mnemonic := helpers.MustEnv("SIGNER_MNEMONIC")
 	deriver, err := derivation.NewDeriver(mnemonic)
 	if err != nil {
@@ -122,7 +120,23 @@ func initSignerService(rdc *redisx.Client, profiles map[string]config.ChainProfi
 	registerBTCSignerProvider(registry, profiles)
 	registerSOLSignerProvider(registry, profiles)
 
-	return signer.NewService(rdc.RDB, registry, authSecret, mnemonic, policy.NewPolicyEngine(addressRepo))
+	return signer.NewService(rdc.RDB, registry, authProvider, mnemonic, policy.NewPolicyEngine(addressRepo))
+}
+
+func buildSignerAuthProvider() auth.Provider {
+	if keyID := strings.TrimSpace(helpers.Getenv("SIGNER_AUTH_KMS_KEY_ID", "")); keyID != "" {
+		p, err := auth.NewKMSProvider(context.Background(), keyID)
+		if err != nil {
+			log.Fatalf("init signer auth kms provider failed: %v", err)
+		}
+		log.Printf("[signer] auth kms provider ready key_id=%s", keyID)
+		return p
+	}
+	p, err := auth.NewLocalProvider([]byte(helpers.MustEnv("SIGNER_AUTH_SECRET")))
+	if err != nil {
+		log.Fatalf("init signer auth provider failed: %v", err)
+	}
+	return p
 }
 
 func initGorm() *gorm.DB {

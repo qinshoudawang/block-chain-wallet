@@ -1,56 +1,29 @@
-### Address Service（用户钱包入口）
+# Wallet System
 
-HD 地址分配（记录 user_id -> derivation index -> address）
+多链钱包后端项目，覆盖地址生成、充值监听、账本记账、提现编排、签名、广播、归集与对账，支持 EVM / BTC / Solana 三类链路。
 
-### Deposit Scanner（充值监听）
+## Core Modules
 
-扫块/订阅 logs → 匹配用户地址 → 写 deposits → 调 Ledger 入账
+- Address: HD 地址分配与地址索引管理。
+- Deposit: 多链充值监听、确认推进、reorg 回滚。
+- Ledger: 账户余额、冻结、流水、幂等记账。
+- Withdraw: 提现编排，包含风控、冻结、构造交易、重试与状态流转。
+- Signer: 独立签名服务，支持本地私钥与 AWS KMS。
+- Broadcaster: 异步广播、失败重试、消息重放。
+- Sweep: 用户地址余额归集与热钱包 top-up。
+- Reconciler: 链上余额对账、账本增量对账、业务流对账。
 
-### Ledger Service（账本）
+## Tech Stack
 
-余额、冻结、流水、幂等入账
+- Language: Go
+- Storage: PostgreSQL, Redis
+- Messaging: Kafka
+- RPC / Chain: Ethereum JSON-RPC, Esplora API, Solana RPC
+- Signing: go-ethereum, btcd, solana-go, AWS KMS
 
-### Withdraw Orchestrator（提现编排）
+## Highlights
 
-风控/审批、冻结余额、分配 nonce、构造 unsigned tx、调用 signer、落库、发 Kafka
-
-### Signer Service（安全域：窄职责）
-
-幂等、防重放、policy 校验、HMAC 授权验真、签名
-
-可插拔后端：Local → KMS/HSM/MPC/TEE
-
-### Tx Broadcaster / Replayer / Confirmer（异步执行器）
-
-消费 tx.broadcast.v1、广播、多 RPC fallback、错误分类、写重试计划
-
-### Sweep Service（归集）
-
-把用户地址余额归集到热钱包（复用 TxBuilder + Signer + Kafka）
-
-### Key Manager（KMS/HSM/MPC/TEE）
-
-密钥材料/派生/签名在安全硬件或受控环境
-
-## Withdraw API 示例
-
-EVM 原生币转账（`token` 不传）：
-
-```json
-{
-  "chain": "ethereum",
-  "to": "0x1111111111111111111111111111111111111111",
-  "amount": "10000000000000000"
-}
-```
-
-EVM ERC20 转账（传 token 合约地址）：
-
-```json
-{
-  "chain": "ethereum",
-  "to": "0x1111111111111111111111111111111111111111",
-  "amount": "1000000",
-  "token": "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
-}
-```
+- 多链统一抽象：EVM、BTC、Solana 共用地址、账本、提现、对账主流程。
+- 安全隔离：Signer 独立部署，支持 HMAC 鉴权、幂等、防重放、KMS 托管签名。
+- 一致性处理：支持确认数、链回滚检测、充值/提现状态恢复、账本补偿。
+- 工程化能力：异步广播、重试重放、归集、热钱包管理、对账告警。 

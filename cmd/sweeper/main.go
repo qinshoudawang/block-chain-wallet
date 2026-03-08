@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	auth "wallet-system/internal/auth"
 	evmchain "wallet-system/internal/chain/evm"
 	"wallet-system/internal/clients"
 	"wallet-system/internal/config/env"
@@ -81,7 +82,7 @@ func main() {
 		baseCfg.Chain, baseCfg.HotAddress, len(assets), baseCfg.MinNativeWei.String(), baseCfg.MinTokenAmount.String(),
 		baseCfg.GasReserveWei.String(), baseCfg.TokenTopUpWei.String(), baseCfg.LockTTL.String())
 
-	authSecret := []byte(helpers.Getenv("SWEEP_AUTH_SECRET", helpers.MustEnv("SIGNER_AUTH_SECRET")))
+	authProvider := buildSignerAuthProvider()
 	sweepRepo := repo.NewSweepRepo(db)
 	chainRepo := repo.NewChainRepo(db)
 	go sweep.NewEVMTracker(
@@ -96,9 +97,25 @@ func main() {
 		cfg := baseCfg
 		cfg.TokenContract = asset
 		log.Printf("[sweeper] worker chain=%s token=%s", cfg.Chain, cfg.TokenContract)
-		go sweep.NewEVMSweeper(cfg, cli, signerCli, authSecret, producer, rdc.RDB, sweepRepo, withdrawCli).Run(ctx)
+		go sweep.NewEVMSweeper(cfg, cli, signerCli, authProvider, producer, rdc.RDB, sweepRepo, withdrawCli).Run(ctx)
 	}
 	<-ctx.Done()
+}
+
+func buildSignerAuthProvider() auth.Provider {
+	if keyID := strings.TrimSpace(helpers.Getenv("SIGNER_AUTH_KMS_KEY_ID", "")); keyID != "" {
+		p, err := auth.NewKMSProvider(context.Background(), keyID)
+		if err != nil {
+			log.Fatalf("init signer auth kms provider failed: %v", err)
+		}
+		return p
+	}
+	secret := []byte(helpers.Getenv("SWEEP_AUTH_SECRET", helpers.MustEnv("SIGNER_AUTH_SECRET")))
+	p, err := auth.NewLocalProvider(secret)
+	if err != nil {
+		log.Fatalf("init signer auth provider failed: %v", err)
+	}
+	return p
 }
 
 func initRedis(ctx context.Context) *redisx.Client {

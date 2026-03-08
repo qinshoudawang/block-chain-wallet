@@ -43,7 +43,7 @@ type EVMSweeper struct {
 	cfg         EVMSweeperConfig
 	evm         *evmchain.Client
 	signer      signpb.SignerServiceClient
-	authSecret  []byte
+	auth        auth.Provider
 	producer    *kafka.Producer
 	redis       *redis.Client
 	sweepRepo   *repo.SweepRepo
@@ -54,7 +54,7 @@ func NewEVMSweeper(
 	cfg EVMSweeperConfig,
 	evm *evmchain.Client,
 	signerCli *clients.SignerClient,
-	authSecret []byte,
+	authProvider auth.Provider,
 	producer *kafka.Producer,
 	redisClient *redis.Client,
 	sweepRepo *repo.SweepRepo,
@@ -72,7 +72,7 @@ func NewEVMSweeper(
 		cfg:         cfg,
 		evm:         evm,
 		signer:      signer,
-		authSecret:  authSecret,
+		auth:        authProvider,
 		producer:    producer,
 		redis:       redisClient,
 		sweepRepo:   sweepRepo,
@@ -81,7 +81,7 @@ func NewEVMSweeper(
 }
 
 func (s *EVMSweeper) Run(ctx context.Context) {
-	if s == nil || s.evm == nil || s.signer == nil || len(s.authSecret) == 0 || s.sweepRepo == nil || s.producer == nil {
+	if s == nil || s.evm == nil || s.signer == nil || s.auth == nil || s.sweepRepo == nil || s.producer == nil {
 		return
 	}
 	poll := s.cfg.PollInterval
@@ -347,7 +347,7 @@ func (s *EVMSweeper) signTx(
 ) ([]byte, error) {
 	requestID := "sweep-sign:" + uuid.NewString()
 	// HMAC binds key fields + unsigned payload hash to prevent payload tampering in transit.
-	authToken := auth.MakeToken(s.authSecret, auth.TxPayload{
+	authToken, err := auth.MakeTokenWithProvider(ctx, s.auth, auth.TxPayload{
 		WithdrawID: bizID,
 		RequestID:  requestID,
 		Chain:      s.cfg.Chain,
@@ -356,6 +356,9 @@ func (s *EVMSweeper) signTx(
 		Amount:     amount,
 		UnsignedTx: unsignedTx,
 	})
+	if err != nil {
+		return nil, err
+	}
 	sctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	resp, err := s.signer.SignTransaction(sctx, &signpb.SignRequest{
