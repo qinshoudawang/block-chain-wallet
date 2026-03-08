@@ -11,8 +11,10 @@ import (
 
 	btcchain "wallet-system/internal/chain/btc"
 	evmchain "wallet-system/internal/chain/evm"
+	solchain "wallet-system/internal/chain/sol"
 	btcindex "wallet-system/internal/chainindex/btc"
 	evmindex "wallet-system/internal/chainindex/evm"
+	solindex "wallet-system/internal/chainindex/sol"
 	"wallet-system/internal/config/env"
 	"wallet-system/internal/helpers"
 	storagemigrate "wallet-system/internal/storage/migrate"
@@ -35,6 +37,8 @@ func main() {
 	repos := initRepos(db)
 	btcCleanup := startBTCIndexer(ctx, repos)
 	defer btcCleanup()
+	solCleanup := startSOLIndexer(ctx, repos)
+	defer solCleanup()
 	evmCleanup := startEVMIndexer(ctx, repos)
 	defer evmCleanup()
 	<-ctx.Done()
@@ -116,6 +120,29 @@ func startBTCIndexer(ctx context.Context, repos repos) func() {
 	go btcindex.NewDepositProjector(cfg.Chain, cfg.Confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
 	go btcindex.NewIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
 	return func() { client.Close() }
+}
+
+func startSOLIndexer(ctx context.Context, repos repos) func() {
+	prof, ok, err := env.LoadSOLProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid sol profile: %v", err)
+	}
+	if !ok {
+		return func() {}
+	}
+	client := solchain.NewClient(prof.RPC)
+	cfg := solindex.IndexerConfig{
+		Chain:        prof.Chain,
+		PollInterval: time.Duration(helpers.ParseIntEnv("DEPOSIT_SOL_POLL_SEC", 15)) * time.Second,
+		BatchBlocks:  uint64(helpers.ParseIntEnv("DEPOSIT_SOL_BATCH_BLOCKS", 100)),
+		StartBlock:   uint64(helpers.ParseIntEnv("DEPOSIT_SOL_START_BLOCK", 0)),
+	}
+	confirmations := uint64(helpers.ParseIntEnv("DEPOSIT_SOL_CONFIRMATIONS", 32))
+
+	log.Printf("[indexer] starting sol chain index chain=%s confirmations=%d", cfg.Chain, confirmations)
+	go solindex.NewDepositProjector(cfg.Chain, confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
+	go solindex.NewIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
+	return func() {}
 }
 
 func initGorm() *gorm.DB {

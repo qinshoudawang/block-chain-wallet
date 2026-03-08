@@ -83,6 +83,22 @@ func (r *ChainRepo) UpsertBTCBlock(ctx context.Context, chain string, blockNumbe
 	}).Create(&rec).Error
 }
 
+func (r *ChainRepo) UpsertSOLBlock(ctx context.Context, chain string, blockNumber uint64, blockHash string, parentHash string) error {
+	if r == nil || r.db == nil {
+		return errors.New("chain repo not configured")
+	}
+	rec := chainmodel.SOLIndexedBlock{
+		Chain:       normalizeChain(chain),
+		BlockNumber: blockNumber,
+		BlockHash:   strings.TrimSpace(blockHash),
+		ParentHash:  strings.TrimSpace(parentHash),
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "chain"}, {Name: "block_number"}},
+		DoUpdates: clause.AssignmentColumns([]string{"block_hash", "parent_hash", "updated_at"}),
+	}).Create(&rec).Error
+}
+
 func (r *ChainRepo) GetEVMBlockHash(ctx context.Context, chain string, blockNumber uint64) (string, bool, error) {
 	if r == nil || r.db == nil {
 		return "", false, errors.New("chain repo not configured")
@@ -105,6 +121,23 @@ func (r *ChainRepo) GetBTCBlockHash(ctx context.Context, chain string, blockNumb
 		return "", false, errors.New("chain repo not configured")
 	}
 	var out chainmodel.BTCIndexedBlock
+	if err := r.db.WithContext(ctx).
+		Select("block_hash").
+		Where("chain = ? AND block_number = ?", normalizeChain(chain), blockNumber).
+		First(&out).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return out.BlockHash, true, nil
+}
+
+func (r *ChainRepo) GetSOLBlockHash(ctx context.Context, chain string, blockNumber uint64) (string, bool, error) {
+	if r == nil || r.db == nil {
+		return "", false, errors.New("chain repo not configured")
+	}
+	var out chainmodel.SOLIndexedBlock
 	if err := r.db.WithContext(ctx).
 		Select("block_hash").
 		Where("chain = ? AND block_number = ?", normalizeChain(chain), blockNumber).
@@ -244,6 +277,15 @@ func (r *ChainRepo) DeleteBTCBlocksFrom(ctx context.Context, chain string, fromB
 	return r.db.WithContext(ctx).
 		Where("chain = ? AND block_number >= ?", normalizeChain(chain), fromBlock).
 		Delete(&chainmodel.BTCIndexedBlock{}).Error
+}
+
+func (r *ChainRepo) DeleteSOLBlocksFrom(ctx context.Context, chain string, fromBlock uint64) error {
+	if r == nil || r.db == nil {
+		return errors.New("chain repo not configured")
+	}
+	return r.db.WithContext(ctx).
+		Where("chain = ? AND block_number >= ?", normalizeChain(chain), fromBlock).
+		Delete(&chainmodel.SOLIndexedBlock{}).Error
 }
 
 func (r *ChainRepo) ListReorgNoticesAfterID(ctx context.Context, chain string, lastID uint64, limit int) ([]chainmodel.ReorgNotice, error) {
