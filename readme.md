@@ -25,6 +25,20 @@
 ## Highlights
 
 - 多链统一抽象：EVM、BTC、Solana 共用地址、账本、提现、对账主流程。
-- 安全隔离：Signer 独立部署，支持请求 HMAC 验真、幂等与 KMS 托管签名。
-- 一致性处理：支持确认数、链回滚检测、充值/提现状态恢复、账本补偿。
+- 安全隔离：Signer 独立部署，支持请求验真、幂等与 KMS 托管签名。
+- 一致性处理：支持 nonce/sequence 管理、UTXO reservation、确认数推进、链回滚检测、充值/提现状态恢复与账本补偿。
 - 工程化能力：异步广播、重试重放、归集、热钱包管理、对账告警。 
+
+## Startup
+
+1. 配置 [`.env`]
+2. 启动基础依赖：PostgreSQL、Redis、Kafka
+3. 启动项目服务：
+
+```bash
+scripts/dev_services.sh start
+```
+4. 关闭项目服务：
+```bash
+scripts/dev_services.sh stop
+```
