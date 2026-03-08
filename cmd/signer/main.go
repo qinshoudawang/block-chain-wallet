@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -137,7 +138,8 @@ func initGorm() *gorm.DB {
 }
 
 func registerEVMSignerProviders(registry *provider.Registry, profiles map[string]config.ChainProfile, deriver *derivation.Deriver, addressRepo *repo.AddressRepo) {
-	priv := helpers.MustEnv("ETH_HOT_WALLET_PRIV")
+	kmsKeyID := helpers.Getenv("ETH_HOT_WALLET_KMS_KEY_ID", "")
+	priv := helpers.Getenv("ETH_HOT_WALLET_PRIV", "")
 	for chain, p := range profiles {
 		spec, err := helpers.ResolveChainSpec(chain)
 		if err != nil {
@@ -149,9 +151,23 @@ func registerEVMSignerProviders(registry *provider.Registry, profiles map[string
 		if p.ChainID == nil {
 			log.Fatalf("evm chain id is required for chain=%s", chain)
 		}
-		evmSigner, err := provider.NewEVMSigner(priv, p.ChainID, deriver, addressRepo)
+		var evmSigner provider.SignerProvider
+		if strings.TrimSpace(kmsKeyID) != "" {
+			kmsSigner, kmsErr := provider.NewEVMKMSSigner(context.Background(), kmsKeyID, p.ChainID, deriver, addressRepo)
+			if kmsErr != nil {
+				err = kmsErr
+			} else {
+				log.Printf("[signer] evm kms signer ready chain=%s key_id=%s address=%s", chain, kmsSigner.KeyID(), kmsSigner.HotAddress())
+				evmSigner = kmsSigner
+			}
+		} else {
+			if strings.TrimSpace(priv) == "" {
+				log.Fatalf("ETH_HOT_WALLET_PRIV or ETH_HOT_WALLET_KMS_KEY_ID is required for chain=%s", chain)
+			}
+			evmSigner, err = provider.NewEVMSigner(priv, p.ChainID, deriver, addressRepo)
+		}
 		if err != nil {
-			log.Fatalf("init evm local signer failed chain=%s err=%v", chain, err)
+			log.Fatalf("init evm signer failed chain=%s err=%v", chain, err)
 		}
 		if err := registry.Register(chain, evmSigner); err != nil {
 			log.Fatalf("register evm signer provider failed chain=%s err=%v", chain, err)
