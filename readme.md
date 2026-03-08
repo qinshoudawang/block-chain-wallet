@@ -19,11 +19,12 @@
 - Storage: PostgreSQL, Redis
 - Messaging: Kafka
 - RPC / Chain: Ethereum JSON-RPC, Esplora API, Solana RPC
-- Signing: go-ethereum, btcd, solana-go, AWS KMS
+- Chain SDK: go-ethereum, btcd, solana-go
+- Key Management: AWS KMS
 
 ## Highlights
 
 - 多链统一抽象：EVM、BTC、Solana 共用地址、账本、提现、对账主流程。
-- 安全隔离：Signer 独立部署，支持 HMAC 鉴权、幂等、防重放、KMS 托管签名。
+- 安全隔离：Signer 独立部署，支持请求 HMAC 验真、幂等与 KMS 托管签名。
 - 一致性处理：支持确认数、链回滚检测、充值/提现状态恢复、账本补偿。
 - 工程化能力：异步广播、重试重放、归集、热钱包管理、对账告警。 
