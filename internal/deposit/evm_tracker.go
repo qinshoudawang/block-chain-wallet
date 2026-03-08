@@ -1,4 +1,4 @@
-package solindex
+package deposit
 
 import (
 	"context"
@@ -7,35 +7,35 @@ import (
 	"strings"
 	"time"
 
-	solchain "wallet-system/internal/chain/sol"
+	evmchain "wallet-system/internal/chain/evm"
 	"wallet-system/internal/storage/repo"
 )
 
-type DepositProjector struct {
+type EVMTracker struct {
 	chainRepo     *repo.ChainRepo
 	depositRepo   *repo.DepositRepo
-	sol           *solchain.Client
+	evm           *evmchain.Client
 	chain         string
 	poll          time.Duration
 	confirmations uint64
 	reorgCursor   string
 }
 
-func NewDepositProjector(chain string, confirmations uint64, chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, sol *solchain.Client, poll time.Duration) *DepositProjector {
+func NewEVMTracker(chain string, confirmations uint64, chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, evm *evmchain.Client, poll time.Duration) *EVMTracker {
 	chain = strings.ToLower(strings.TrimSpace(chain))
-	return &DepositProjector{
+	return &EVMTracker{
 		chainRepo:     chainRepo,
 		depositRepo:   depositRepo,
-		sol:           sol,
+		evm:           evm,
 		chain:         chain,
 		poll:          poll,
 		confirmations: confirmations,
-		reorgCursor:   "deposit-reorg-projector:" + chain,
+		reorgCursor:   "deposit-reorg-tracker:" + chain,
 	}
 }
 
-func (p *DepositProjector) Run(ctx context.Context) {
-	if p == nil || p.chainRepo == nil || p.depositRepo == nil || p.sol == nil {
+func (p *EVMTracker) Run(ctx context.Context) {
+	if p == nil || p.chainRepo == nil || p.depositRepo == nil || p.evm == nil {
 		return
 	}
 	poll := p.poll
@@ -56,13 +56,13 @@ func (p *DepositProjector) Run(ctx context.Context) {
 	}
 }
 
-func (p *DepositProjector) tick(ctx context.Context) {
-	latest, err := p.sol.LatestHeight(ctx)
+func (p *EVMTracker) tick(ctx context.Context) {
+	latest, err := p.evm.LatestHeight(ctx)
 	if err != nil {
 		return
 	}
 	if err := p.handleReorgs(ctx); err != nil {
-		log.Printf("[deposit-projector-sol] handle reorgs failed chain=%s err=%v", p.chain, err)
+		log.Printf("[deposit-tracker-evm] handle reorgs failed chain=%s err=%v", p.chain, err)
 		return
 	}
 	maxBlock, ok := confirmableDepositBlock(latest, p.confirmations)
@@ -91,14 +91,14 @@ func (p *DepositProjector) tick(ctx context.Context) {
 			Amount:               amount,
 		})
 		if err == nil {
-			log.Printf("[deposit-projector-sol] confirmed deposit chain=%s tx=%s account_index=%d to=%s amount=%s",
+			log.Printf("[deposit-tracker-evm] confirmed deposit chain=%s tx=%s log_index=%d to=%s amount=%s",
 				rec.Chain, rec.TxHash, rec.LogIndex, rec.ToAddress, rec.Amount)
 		}
 	}
 }
 
-func (p *DepositProjector) handleReorgs(ctx context.Context) error {
-	cur, err := p.chainRepo.GetOrCreateProjectorCursor(ctx, p.reorgCursor)
+func (p *EVMTracker) handleReorgs(ctx context.Context) error {
+	cur, err := p.chainRepo.GetOrCreateTrackerCursor(ctx, p.reorgCursor)
 	if err != nil {
 		return err
 	}
@@ -118,10 +118,10 @@ func (p *DepositProjector) handleReorgs(ctx context.Context) error {
 			maxID = notice.ID
 		}
 	}
-	return p.chainRepo.SaveProjectorCursor(ctx, p.reorgCursor, maxID)
+	return p.chainRepo.SaveTrackerCursor(ctx, p.reorgCursor, maxID)
 }
 
-func (p *DepositProjector) revertFromBlock(ctx context.Context, fromBlock uint64) error {
+func (p *EVMTracker) revertFromBlock(ctx context.Context, fromBlock uint64) error {
 	var lastID uint64
 	for {
 		items, err := p.depositRepo.ListReorgAffectedAfterID(ctx, p.chain, fromBlock, lastID, 500)
@@ -137,7 +137,7 @@ func (p *DepositProjector) revertFromBlock(ctx context.Context, fromBlock uint64
 			if err := p.depositRepo.RevertByChainRef(ctx, rec.Chain, rec.TxHash, rec.LogIndex); err != nil {
 				return err
 			}
-			log.Printf("[deposit-projector-sol] reverted deposit chain=%s tx=%s account_index=%d",
+			log.Printf("[deposit-tracker-evm] reverted deposit chain=%s tx=%s log_index=%d",
 				rec.Chain, rec.TxHash, rec.LogIndex)
 		}
 	}

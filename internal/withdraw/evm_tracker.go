@@ -1,9 +1,10 @@
-package evmindex
+package withdraw
 
 import (
 	"context"
 	"errors"
 	"log"
+	"math/big"
 	"strings"
 	"time"
 
@@ -14,9 +15,12 @@ import (
 
 	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
-type EVMWithdrawProjector struct {
+var erc20TransferTopic = common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+
+type EVMTracker struct {
 	chainRepo    *repo.ChainRepo
 	withdrawRepo *repo.WithdrawRepo
 	ledgerRepo   *repo.LedgerRepo
@@ -27,8 +31,8 @@ type EVMWithdrawProjector struct {
 	reorgCursor  string
 }
 
-func NewEVMWithdrawProjector(chain string, confirmDepth uint64, chainRepo *repo.ChainRepo, withdrawRepo *repo.WithdrawRepo, ledgerRepo *repo.LedgerRepo, evm *evmchain.Client, poll time.Duration) *EVMWithdrawProjector {
-	return &EVMWithdrawProjector{
+func NewEVMTracker(chain string, confirmDepth uint64, chainRepo *repo.ChainRepo, withdrawRepo *repo.WithdrawRepo, ledgerRepo *repo.LedgerRepo, evm *evmchain.Client, poll time.Duration) *EVMTracker {
+	return &EVMTracker{
 		chainRepo:    chainRepo,
 		withdrawRepo: withdrawRepo,
 		ledgerRepo:   ledgerRepo,
@@ -36,11 +40,11 @@ func NewEVMWithdrawProjector(chain string, confirmDepth uint64, chainRepo *repo.
 		chain:        strings.ToLower(strings.TrimSpace(chain)),
 		confirmDepth: confirmDepth,
 		poll:         poll,
-		reorgCursor:  "withdraw-reorg-projector:" + strings.ToLower(strings.TrimSpace(chain)),
+		reorgCursor:  "withdraw-reorg-tracker:" + strings.ToLower(strings.TrimSpace(chain)),
 	}
 }
 
-func (w *EVMWithdrawProjector) Run(ctx context.Context) {
+func (w *EVMTracker) Run(ctx context.Context) {
 	if w == nil || w.chainRepo == nil || w.withdrawRepo == nil || w.evm == nil {
 		return
 	}
@@ -62,18 +66,18 @@ func (w *EVMWithdrawProjector) Run(ctx context.Context) {
 	}
 }
 
-func (w *EVMWithdrawProjector) tick(ctx context.Context) {
+func (w *EVMTracker) tick(ctx context.Context) {
 	finalized, ok := finalizedHeight(ctx, w.evm, w.confirmDepth)
 	if !ok {
 		return
 	}
 	if err := w.handleReorgs(ctx, finalized); err != nil {
-		log.Printf("[evm-withdraw-projector] handle reorgs failed chain=%s err=%v", w.chain, err)
+		log.Printf("[evm-withdraw-tracker] handle reorgs failed chain=%s err=%v", w.chain, err)
 		return
 	}
 	items, err := w.withdrawRepo.ListBroadcastedToConfirm(ctx, 200)
 	if err != nil {
-		log.Printf("[evm-withdraw-projector] list broadcasted failed chain=%s err=%v", w.chain, err)
+		log.Printf("[evm-withdraw-tracker] list broadcasted failed chain=%s err=%v", w.chain, err)
 		return
 	}
 	for _, item := range items {
@@ -81,13 +85,13 @@ func (w *EVMWithdrawProjector) tick(ctx context.Context) {
 			continue
 		}
 		if err := w.reconcileOrder(ctx, &item, finalized, false); err != nil {
-			log.Printf("[evm-withdraw-projector] reconcile failed withdraw_id=%s tx=%s err=%v", item.WithdrawID, item.TxHash, err)
+			log.Printf("[evm-withdraw-tracker] reconcile failed withdraw_id=%s tx=%s err=%v", item.WithdrawID, item.TxHash, err)
 		}
 	}
 }
 
-func (w *EVMWithdrawProjector) handleReorgs(ctx context.Context, finalized uint64) error {
-	cur, err := w.chainRepo.GetOrCreateProjectorCursor(ctx, w.reorgCursor)
+func (w *EVMTracker) handleReorgs(ctx context.Context, finalized uint64) error {
+	cur, err := w.chainRepo.GetOrCreateTrackerCursor(ctx, w.reorgCursor)
 	if err != nil {
 		return err
 	}
@@ -107,10 +111,10 @@ func (w *EVMWithdrawProjector) handleReorgs(ctx context.Context, finalized uint6
 			maxID = notice.ID
 		}
 	}
-	return w.chainRepo.SaveProjectorCursor(ctx, w.reorgCursor, maxID)
+	return w.chainRepo.SaveTrackerCursor(ctx, w.reorgCursor, maxID)
 }
 
-func (w *EVMWithdrawProjector) reconcileFromBlock(ctx context.Context, fromBlock uint64, finalized uint64) error {
+func (w *EVMTracker) reconcileFromBlock(ctx context.Context, fromBlock uint64, finalized uint64) error {
 	var lastID uint64
 	for {
 		items, err := w.withdrawRepo.ListReorgAffectedAfterID(ctx, w.chain, fromBlock, lastID, 200)
@@ -130,7 +134,7 @@ func (w *EVMWithdrawProjector) reconcileFromBlock(ctx context.Context, fromBlock
 	}
 }
 
-func (w *EVMWithdrawProjector) reconcileOrder(ctx context.Context, rec *withdrawmodel.WithdrawOrder, finalized uint64, allowRevert bool) error {
+func (w *EVMTracker) reconcileOrder(ctx context.Context, rec *withdrawmodel.WithdrawOrder, finalized uint64, allowRevert bool) error {
 	if rec == nil || strings.TrimSpace(rec.TxHash) == "" {
 		return nil
 	}
@@ -213,7 +217,7 @@ func finalizedHeight(ctx context.Context, evm *evmchain.Client, confirmations ui
 	}
 	latest, err := evm.LatestHeight(ctx)
 	if err != nil {
-		log.Printf("[evm-tx-projector] latest height failed err=%v", err)
+		log.Printf("[evm-tx-tracker] latest height failed err=%v", err)
 		return 0, false
 	}
 	if latest < confirmations {
@@ -281,3 +285,102 @@ func (t withdrawExecutionTarget) GetSourceAddress() string        { return t.rec
 func (t withdrawExecutionTarget) GetTargetAddress() string        { return t.rec.ToAddr }
 func (t withdrawExecutionTarget) GetAssetContractAddress() string { return t.rec.TokenContractAddress }
 func (t withdrawExecutionTarget) GetAmount() string               { return t.rec.Amount }
+
+func buildTransactionEvent(chain string, tx *ethtypes.Transaction, receipt *ethtypes.Receipt, fromAddr string) (repo.ChainEventInput, bool, error) {
+	if tx == nil || receipt == nil {
+		return repo.ChainEventInput{}, false, nil
+	}
+	fee := big.NewInt(0)
+	if receipt.EffectiveGasPrice != nil {
+		fee = new(big.Int).Mul(new(big.Int).SetUint64(receipt.GasUsed), receipt.EffectiveGasPrice)
+	}
+	in := repo.ChainEventInput{
+		Chain:                   chain,
+		EventType:               chainmodel.EventTypeTransaction,
+		BlockNumber:             receipt.BlockNumber.Uint64(),
+		BlockHash:               receipt.BlockHash.Hex(),
+		TxHash:                  receipt.TxHash.Hex(),
+		TxIndex:                 uint(receipt.TransactionIndex),
+		LogIndex:                0,
+		FromAddress:             fromAddr,
+		FeeAssetContractAddress: "",
+		FeeAmount:               fee,
+		Success:                 receipt.Status == ethtypes.ReceiptStatusSuccessful,
+	}
+	if tx.To() != nil && tx.Value() != nil && tx.Value().Sign() > 0 {
+		in.ToAddress = tx.To().Hex()
+		in.AssetContractAddress = ""
+		in.Amount = new(big.Int).Set(tx.Value())
+		return in, true, nil
+	}
+	tokenContract, toAddr, amount, ok, err := extractERC20Transfer(tx, receipt, fromAddr)
+	if err != nil {
+		return repo.ChainEventInput{}, false, err
+	}
+	if !ok {
+		if !in.Success {
+			tokenContract, toAddr, amount, ok = inferFailedERC20Transfer(tx)
+			if !ok {
+				return in, true, nil
+			}
+		} else {
+			return repo.ChainEventInput{}, false, nil
+		}
+	}
+	in.AssetContractAddress = tokenContract
+	in.ToAddress = toAddr
+	in.Amount = amount
+	return in, true, nil
+}
+
+func senderOf(tx *ethtypes.Transaction) (string, error) {
+	if tx == nil {
+		return "", errors.New("transaction is nil")
+	}
+	signer := ethtypes.LatestSignerForChainID(tx.ChainId())
+	from, err := ethtypes.Sender(signer, tx)
+	if err != nil {
+		return "", err
+	}
+	return from.Hex(), nil
+}
+
+func extractERC20Transfer(tx *ethtypes.Transaction, receipt *ethtypes.Receipt, fromAddr string) (string, string, *big.Int, bool, error) {
+	for _, lg := range receipt.Logs {
+		if lg == nil || len(lg.Topics) < 3 || len(lg.Data) != 32 {
+			continue
+		}
+		if lg.Topics[0] != erc20TransferTopic {
+			continue
+		}
+		logFrom := common.BytesToAddress(lg.Topics[1].Bytes()[12:]).Hex()
+		if !strings.EqualFold(logFrom, fromAddr) {
+			continue
+		}
+		amount := new(big.Int).SetBytes(lg.Data)
+		if amount.Sign() <= 0 {
+			continue
+		}
+		return lg.Address.Hex(), common.BytesToAddress(lg.Topics[2].Bytes()[12:]).Hex(), amount, true, nil
+	}
+	return "", "", nil, false, nil
+}
+
+func inferFailedERC20Transfer(tx *ethtypes.Transaction) (string, string, *big.Int, bool) {
+	if tx == nil || tx.To() == nil {
+		return "", "", nil, false
+	}
+	data := tx.Data()
+	if len(data) != 4+32+32 {
+		return "", "", nil, false
+	}
+	if data[0] != 0xa9 || data[1] != 0x05 || data[2] != 0x9c || data[3] != 0xbb {
+		return "", "", nil, false
+	}
+	toAddr := common.BytesToAddress(data[4+12 : 4+32]).Hex()
+	amount := new(big.Int).SetBytes(data[4+32:])
+	if amount.Sign() < 0 {
+		return "", "", nil, false
+	}
+	return tx.To().Hex(), toAddr, amount, true
+}

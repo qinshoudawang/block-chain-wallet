@@ -1,4 +1,4 @@
-package evmindex
+package evm
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	evmchain "wallet-system/internal/chain/evm"
 	chainmodel "wallet-system/internal/storage/model/chain"
 	"wallet-system/internal/storage/repo"
 
@@ -30,16 +29,16 @@ type EVMIndexerConfig struct {
 	StartBlock     uint64
 }
 
-type EVMIndexer struct {
+type Indexer struct {
 	cfg         EVMIndexerConfig
-	evm         *evmchain.Client
+	evm         *Client
 	repo        *repo.ChainRepo
 	addressRepo *repo.AddressRepo
 	depositRepo *repo.DepositRepo
 }
 
-func NewEVMIndexer(chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, addressRepo *repo.AddressRepo, client *evmchain.Client, cfg EVMIndexerConfig) *EVMIndexer {
-	return &EVMIndexer{
+func NewIndexer(chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, addressRepo *repo.AddressRepo, client *Client, cfg EVMIndexerConfig) *Indexer {
+	return &Indexer{
 		cfg:         cfg,
 		evm:         client,
 		repo:        chainRepo,
@@ -48,7 +47,7 @@ func NewEVMIndexer(chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, add
 	}
 }
 
-func (s *EVMIndexer) Run(ctx context.Context) {
+func (s *Indexer) Run(ctx context.Context) {
 	if s == nil || s.evm == nil || s.repo == nil {
 		return
 	}
@@ -74,7 +73,7 @@ func (s *EVMIndexer) Run(ctx context.Context) {
 	}
 }
 
-func (s *EVMIndexer) scanOnce(ctx context.Context) {
+func (s *Indexer) scanOnce(ctx context.Context) {
 	cur, latest, ok := s.prepareState(ctx)
 	if !ok {
 		return
@@ -111,7 +110,7 @@ func (s *EVMIndexer) scanOnce(ctx context.Context) {
 	log.Printf("[chain-indexer-evm] indexed chain=%s from=%d to=%d", s.cfg.Chain, from, to)
 }
 
-func (s *EVMIndexer) prepareState(ctx context.Context) (*chainmodel.IndexCursor, uint64, bool) {
+func (s *Indexer) prepareState(ctx context.Context) (*chainmodel.IndexCursor, uint64, bool) {
 	cur, err := s.repo.GetOrCreateCursor(ctx, s.cfg.Chain, evmIngressStream, s.cfg.StartBlock)
 	if err != nil {
 		log.Printf("[chain-indexer-evm] load cursor failed chain=%s err=%v", s.cfg.Chain, err)
@@ -125,7 +124,7 @@ func (s *EVMIndexer) prepareState(ctx context.Context) (*chainmodel.IndexCursor,
 	return cur, latest, true
 }
 
-func (s *EVMIndexer) handleReorgIfNeeded(ctx context.Context, cursor uint64) bool {
+func (s *Indexer) handleReorgIfNeeded(ctx context.Context, cursor uint64) bool {
 	reorgFrom, err := s.detectReorgFromCursor(ctx, cursor)
 	if err != nil {
 		log.Printf("[chain-indexer-evm] detect reorg failed chain=%s err=%v", s.cfg.Chain, err)
@@ -146,7 +145,7 @@ func (s *EVMIndexer) handleReorgIfNeeded(ctx context.Context, cursor uint64) boo
 	return true
 }
 
-func (s *EVMIndexer) detectReorgFromCursor(ctx context.Context, cursor uint64) (uint64, error) {
+func (s *Indexer) detectReorgFromCursor(ctx context.Context, cursor uint64) (uint64, error) {
 	if cursor == 0 {
 		return 0, nil
 	}
@@ -183,7 +182,7 @@ func (s *EVMIndexer) detectReorgFromCursor(ctx context.Context, cursor uint64) (
 	}
 }
 
-func (s *EVMIndexer) indexRange(ctx context.Context, from uint64, to uint64, depositAddressMap map[string]string) error {
+func (s *Indexer) indexRange(ctx context.Context, from uint64, to uint64, depositAddressMap map[string]string) error {
 	for n := from; n <= to; n++ {
 		head, err := s.evm.HeaderByNumber(ctx, big.NewInt(int64(n)))
 		if err != nil {
@@ -254,7 +253,7 @@ func normalizeTokenContractAddresses(raw []string) []common.Address {
 	return out
 }
 
-func (s *EVMIndexer) loadDepositAddressMap(ctx context.Context) (map[string]string, error) {
+func (s *Indexer) loadDepositAddressMap(ctx context.Context) (map[string]string, error) {
 	if s == nil || s.addressRepo == nil {
 		return map[string]string{}, nil
 	}

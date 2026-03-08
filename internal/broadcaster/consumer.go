@@ -18,6 +18,8 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 )
 
+const maxRetry = 5
+
 type ConsumerRuntime struct {
 	Reader *kafkago.Reader
 	Dlq    *kafka.Producer

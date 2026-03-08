@@ -1,4 +1,4 @@
-package solindex
+package sol
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	solchain "wallet-system/internal/chain/sol"
 	chainmodel "wallet-system/internal/storage/model/chain"
 	"wallet-system/internal/storage/repo"
 )
@@ -23,13 +22,13 @@ type IndexerConfig struct {
 
 type Indexer struct {
 	cfg         IndexerConfig
-	sol         *solchain.Client
+	sol         *Client
 	repo        *repo.ChainRepo
 	depositRepo *repo.DepositRepo
 	addressRepo *repo.AddressRepo
 }
 
-func NewIndexer(chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, addressRepo *repo.AddressRepo, client *solchain.Client, cfg IndexerConfig) *Indexer {
+func NewIndexer(chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, addressRepo *repo.AddressRepo, client *Client, cfg IndexerConfig) *Indexer {
 	return &Indexer{
 		cfg:         cfg,
 		sol:         client,
@@ -149,7 +148,7 @@ func (s *Indexer) detectReorgFromCursor(ctx context.Context, cursor uint64) (uin
 	if err != nil {
 		return 0, err
 	}
-	if strings.EqualFold(localHash, solchain.BlockHashString(block.Blockhash)) {
+	if strings.EqualFold(localHash, BlockHashString(block.Blockhash)) {
 		return 0, nil
 	}
 	for b := check; ; b-- {
@@ -164,7 +163,7 @@ func (s *Indexer) detectReorgFromCursor(ctx context.Context, cursor uint64) (uin
 		if err != nil {
 			return 0, err
 		}
-		if strings.EqualFold(h, solchain.BlockHashString(block.Blockhash)) {
+		if strings.EqualFold(h, BlockHashString(block.Blockhash)) {
 			return b + 1, nil
 		}
 		if b == 0 {
@@ -179,11 +178,11 @@ func (s *Indexer) indexRange(ctx context.Context, from uint64, to uint64, addres
 		if err != nil {
 			return err
 		}
-		parentHash, err := solchain.ParentHashFromBlock(block)
+		parentHash, err := ParentHashFromBlock(block)
 		if err != nil {
 			return err
 		}
-		if err := s.repo.UpsertSOLBlock(ctx, s.cfg.Chain, slot, solchain.BlockHashString(block.Blockhash), parentHash); err != nil {
+		if err := s.repo.UpsertSOLBlock(ctx, s.cfg.Chain, slot, BlockHashString(block.Blockhash), parentHash); err != nil {
 			return err
 		}
 		for _, item := range block.Transactions {
@@ -228,7 +227,7 @@ func (s *Indexer) indexRange(ctx context.Context, from uint64, to uint64, addres
 				}); err != nil {
 					return err
 				}
-				log.Printf("[deposit-projector-sol] matched pending deposit chain=%s slot=%d tx=%s account_index=%d to=%s amount=%s",
+				log.Printf("[deposit-tracker-sol] matched pending deposit chain=%s slot=%d tx=%s account_index=%d to=%s amount=%s",
 					s.cfg.Chain, slot, txHash, idx, toAddr, amount.String())
 			}
 		}

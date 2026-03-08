@@ -12,10 +12,8 @@ import (
 	btcchain "wallet-system/internal/chain/btc"
 	evmchain "wallet-system/internal/chain/evm"
 	solchain "wallet-system/internal/chain/sol"
-	btcindex "wallet-system/internal/chainindex/btc"
-	evmindex "wallet-system/internal/chainindex/evm"
-	solindex "wallet-system/internal/chainindex/sol"
 	"wallet-system/internal/config/env"
+	"wallet-system/internal/deposit"
 	"wallet-system/internal/helpers"
 	storagemigrate "wallet-system/internal/storage/migrate"
 	"wallet-system/internal/storage/repo"
@@ -74,7 +72,7 @@ func startEVMIndexer(ctx context.Context, repos repos) func() {
 		log.Fatalf("init evm client failed chain=%s err=%v", prof.Chain, err)
 	}
 
-	cfg := evmindex.EVMIndexerConfig{
+	cfg := evmchain.EVMIndexerConfig{
 		Chain:          prof.Chain,
 		TokenContracts: parseCSVEnv("EVM_TOKEN_CONTRACTS"),
 		Confirmations:  uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)),
@@ -84,10 +82,8 @@ func startEVMIndexer(ctx context.Context, repos repos) func() {
 	}
 
 	log.Printf("[indexer] starting evm chain index chain=%s contracts=%d confirmations=%d", cfg.Chain, len(cfg.TokenContracts), cfg.Confirmations)
-	go evmindex.NewEVMDepositProjector(cfg.Chain, cfg.Confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
-	go evmindex.NewEVMWithdrawProjector(cfg.Chain, cfg.Confirmations, repos.chain, repos.withdraw, repos.ledger, client, 3*time.Second).Run(ctx)
-	go evmindex.NewEVMSweepProjector(cfg.Chain, cfg.Confirmations, repos.chain, repos.sweep, client, 3*time.Second).Run(ctx)
-	go evmindex.NewEVMIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
+	go deposit.NewEVMTracker(cfg.Chain, cfg.Confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
+	go evmchain.NewIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
 	return func() { client.Close() }
 }
 
@@ -108,17 +104,16 @@ func startBTCIndexer(ctx context.Context, repos repos) func() {
 		log.Fatalf("init btc client failed chain=%s err=%v", prof.Chain, err)
 	}
 
-	cfg := btcindex.IndexerConfig{
+	cfg := btcchain.IndexerConfig{
 		Chain:         prof.Chain,
 		Confirmations: uint64(helpers.ParseIntEnv("DEPOSIT_BTC_CONFIRMATIONS", 2)),
 		PollInterval:  time.Duration(helpers.ParseIntEnv("DEPOSIT_BTC_POLL_SEC", 15)) * time.Second,
 		BatchBlocks:   uint64(helpers.ParseIntEnv("DEPOSIT_BTC_BATCH_BLOCKS", 20)),
 		StartBlock:    uint64(helpers.ParseIntEnv("DEPOSIT_BTC_START_BLOCK", 0)),
 	}
-
 	log.Printf("[indexer] starting btc chain index chain=%s confirmations=%d", cfg.Chain, cfg.Confirmations)
-	go btcindex.NewDepositProjector(cfg.Chain, cfg.Confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
-	go btcindex.NewIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
+	go deposit.NewBTCTracker(cfg.Chain, cfg.Confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
+	go btcchain.NewIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
 	return func() { client.Close() }
 }
 
@@ -131,7 +126,7 @@ func startSOLIndexer(ctx context.Context, repos repos) func() {
 		return func() {}
 	}
 	client := solchain.NewClient(prof.RPC)
-	cfg := solindex.IndexerConfig{
+	cfg := solchain.IndexerConfig{
 		Chain:        prof.Chain,
 		PollInterval: time.Duration(helpers.ParseIntEnv("DEPOSIT_SOL_POLL_SEC", 15)) * time.Second,
 		BatchBlocks:  uint64(helpers.ParseIntEnv("DEPOSIT_SOL_BATCH_BLOCKS", 100)),
@@ -140,8 +135,8 @@ func startSOLIndexer(ctx context.Context, repos repos) func() {
 	confirmations := uint64(helpers.ParseIntEnv("DEPOSIT_SOL_CONFIRMATIONS", 32))
 
 	log.Printf("[indexer] starting sol chain index chain=%s confirmations=%d", cfg.Chain, confirmations)
-	go solindex.NewDepositProjector(cfg.Chain, confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
-	go solindex.NewIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
+	go deposit.NewSOLTracker(cfg.Chain, confirmations, repos.chain, repos.deposit, client, 3*time.Second).Run(ctx)
+	go solchain.NewIndexer(repos.chain, repos.deposit, repos.address, client, cfg).Run(ctx)
 	return func() {}
 }
 

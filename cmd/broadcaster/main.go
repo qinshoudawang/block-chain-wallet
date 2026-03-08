@@ -15,7 +15,6 @@ import (
 	btcchain "wallet-system/internal/chain/btc"
 	"wallet-system/internal/chain/evm"
 	solchain "wallet-system/internal/chain/sol"
-	"wallet-system/internal/clients"
 	"wallet-system/internal/config"
 	"wallet-system/internal/config/env"
 	"wallet-system/internal/helpers"
@@ -24,6 +23,7 @@ import (
 	"wallet-system/internal/sequence/utxoreserve"
 	storagemigrate "wallet-system/internal/storage/migrate"
 	"wallet-system/internal/storage/repo"
+	"wallet-system/internal/withdraw"
 
 	kafkago "github.com/segmentio/kafka-go"
 	"gorm.io/driver/postgres"
@@ -49,6 +49,7 @@ func main() {
 	withdrawRepo := repo.NewWithdrawRepo(db)
 	sweepRepo := repo.NewSweepRepo(db)
 	ledgerRepo := repo.NewLedgerRepo(db)
+	chainRepo := repo.NewChainRepo(db)
 	producer := initKafkaProducer()
 	defer producer.Close()
 	consumer := initKafkaConsumer()
@@ -56,8 +57,7 @@ func main() {
 	chainProfiles := buildChainProfiles()
 	clients, closeChainClients := buildBroadcasterChainClientRegistry(chainProfiles)
 	defer closeChainClients()
-	withdrawCli := initWithdrawClient()
-	defer withdrawCli.Close()
+	withdrawPoll := time.Duration(helpers.ParseIntEnv("BROADCAST_CONFIRMER_POLL_SEC", 60)) * time.Second
 
 	go broadcaster.RunConsumer(ctx, broadcaster.ConsumerDeps{
 		WithdrawRepo: withdrawRepo,
@@ -67,15 +67,23 @@ func main() {
 		Runtime:      consumer,
 	})
 	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
-	go broadcaster.RunConfirmer(ctx, broadcaster.ConfirmerDeps{
-		WithdrawRepo: withdrawRepo,
-		SweepRepo:    sweepRepo,
-		LedgerRepo:   ledgerRepo,
-		Clients:      clients,
-		UTXOReserve:  utxoReserve,
-		Redis:        rdc.RDB,
-		WithdrawRPC:  withdrawCli.Client,
-	})
+	evmClient := initOptionalEVMClient()
+	if evmClient != nil {
+		defer evmClient.Close()
+		evmProf, _ := env.LoadEVMProfileFromEnv()
+		go withdraw.NewEVMTracker(evmProf.Chain, uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)), chainRepo, withdrawRepo, ledgerRepo, evmClient, withdrawPoll).Run(ctx)
+	}
+	btcClient := initOptionalBTCClient()
+	if btcClient != nil {
+		defer btcClient.Close()
+		btcProf, _, _ := env.LoadBTCProfileFromEnv()
+		go withdraw.NewBTCTracker(btcProf.Chain, helpers.ParseIntEnv("BTC_CONFIRM_THRESHOLD", 2), chainRepo, withdrawRepo, ledgerRepo, btcClient, withdrawPoll).Run(ctx)
+	}
+	solClient := initOptionalSOLClient()
+	if solClient != nil {
+		solProf, _, _ := env.LoadSOLProfileFromEnv()
+		go withdraw.NewSOLTracker(solProf.Chain, helpers.ParseIntEnv("SOL_CONFIRM_THRESHOLD", 5), chainRepo, withdrawRepo, ledgerRepo, solClient, withdrawPoll).Run(ctx)
+	}
 
 	<-ctx.Done()
 }
@@ -135,6 +143,18 @@ func initEVMClient() *evm.Client {
 	return client
 }
 
+func initOptionalEVMClient() *evm.Client {
+	prof, err := env.LoadEVMProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid evm network config: %v", err)
+	}
+	client, err := evm.NewClient(prof.RPC)
+	if err != nil {
+		log.Fatalf("init evm client failed: %v", err)
+	}
+	return client
+}
+
 func initBTCClient() *btcchain.Client {
 	prof, ok, err := env.LoadBTCProfileFromEnv()
 	if err != nil {
@@ -154,6 +174,17 @@ func initBTCClient() *btcchain.Client {
 	return cli
 }
 
+func initOptionalBTCClient() *btcchain.Client {
+	prof, ok, err := env.LoadBTCProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid btc network config chain=%s err=%v", prof.Chain, err)
+	}
+	if !ok {
+		return nil
+	}
+	return initBTCClient()
+}
+
 func initSOLClient() *solchain.Client {
 	prof, ok, err := env.LoadSOLProfileFromEnv()
 	if err != nil {
@@ -161,6 +192,17 @@ func initSOLClient() *solchain.Client {
 	}
 	if !ok {
 		log.Fatalf("sol profile is not configured for chain=%s", prof.Chain)
+	}
+	return solchain.NewClient(prof.RPC)
+}
+
+func initOptionalSOLClient() *solchain.Client {
+	prof, ok, err := env.LoadSOLProfileFromEnv()
+	if err != nil {
+		log.Fatalf("invalid sol network config chain=%s err=%v", prof.Chain, err)
+	}
+	if !ok {
+		return nil
 	}
 	return solchain.NewClient(prof.RPC)
 }
@@ -246,13 +288,4 @@ func initKafkaConsumer() *broadcaster.ConsumerRuntime {
 		Topic:  topic,
 		Group:  group,
 	}
-}
-
-func initWithdrawClient() *clients.WithdrawClient {
-	addr := helpers.Getenv("WITHDRAW_GRPC_ADDR", "127.0.0.1:9002")
-	cli, err := clients.NewWithdrawClient(addr)
-	if err != nil {
-		log.Fatalf("init withdraw client failed: %v", err)
-	}
-	return cli
 }

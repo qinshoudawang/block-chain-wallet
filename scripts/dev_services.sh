@@ -96,6 +96,8 @@ start_one() {
   fi
   build_one "$svc"
 
+  : >"$(log_file "$svc")"
+
   echo "[start] $svc"
   (
     cd "$ROOT_DIR"

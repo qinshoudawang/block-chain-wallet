@@ -304,18 +304,18 @@ func (r *ChainRepo) ListReorgNoticesAfterID(ctx context.Context, chain string, l
 	return out, err
 }
 
-func (r *ChainRepo) GetOrCreateProjectorCursor(ctx context.Context, name string) (*chainmodel.ProjectorCursor, error) {
+func (r *ChainRepo) GetOrCreateTrackerCursor(ctx context.Context, name string) (*chainmodel.TrackerCursor, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("chain repo not configured")
 	}
 	name = strings.TrimSpace(name)
-	var cur chainmodel.ProjectorCursor
+	var cur chainmodel.TrackerCursor
 	if err := r.db.WithContext(ctx).Where("name = ?", name).First(&cur).Error; err == nil {
 		return &cur, nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
-	cur = chainmodel.ProjectorCursor{Name: name}
+	cur = chainmodel.TrackerCursor{Name: name}
 	if err := r.db.WithContext(ctx).Create(&cur).Error; err != nil {
 		if err2 := r.db.WithContext(ctx).Where("name = ?", name).First(&cur).Error; err2 != nil {
 			return nil, err
@@ -324,12 +324,12 @@ func (r *ChainRepo) GetOrCreateProjectorCursor(ctx context.Context, name string)
 	return &cur, nil
 }
 
-func (r *ChainRepo) SaveProjectorCursor(ctx context.Context, name string, lastEventID uint64) error {
+func (r *ChainRepo) SaveTrackerCursor(ctx context.Context, name string, lastEventID uint64) error {
 	if r == nil || r.db == nil {
 		return errors.New("chain repo not configured")
 	}
 	return r.db.WithContext(ctx).
-		Model(&chainmodel.ProjectorCursor{}).
+		Model(&chainmodel.TrackerCursor{}).
 		Where("name = ?", strings.TrimSpace(name)).
 		Update("last_event_id", lastEventID).Error
 }

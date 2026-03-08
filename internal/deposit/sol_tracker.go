@@ -1,4 +1,4 @@
-package btcindex
+package deposit
 
 import (
 	"context"
@@ -7,35 +7,35 @@ import (
 	"strings"
 	"time"
 
-	btcchain "wallet-system/internal/chain/btc"
+	solchain "wallet-system/internal/chain/sol"
 	"wallet-system/internal/storage/repo"
 )
 
-type DepositProjector struct {
+type SOLTracker struct {
 	chainRepo     *repo.ChainRepo
 	depositRepo   *repo.DepositRepo
-	btc           *btcchain.Client
+	sol           *solchain.Client
 	chain         string
 	poll          time.Duration
 	confirmations uint64
 	reorgCursor   string
 }
 
-func NewDepositProjector(chain string, confirmations uint64, chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, btc *btcchain.Client, poll time.Duration) *DepositProjector {
+func NewSOLTracker(chain string, confirmations uint64, chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, sol *solchain.Client, poll time.Duration) *SOLTracker {
 	chain = strings.ToLower(strings.TrimSpace(chain))
-	return &DepositProjector{
+	return &SOLTracker{
 		chainRepo:     chainRepo,
 		depositRepo:   depositRepo,
-		btc:           btc,
+		sol:           sol,
 		chain:         chain,
 		poll:          poll,
 		confirmations: confirmations,
-		reorgCursor:   "deposit-reorg-projector:" + chain,
+		reorgCursor:   "deposit-reorg-tracker:" + chain,
 	}
 }
 
-func (p *DepositProjector) Run(ctx context.Context) {
-	if p == nil || p.chainRepo == nil || p.depositRepo == nil || p.btc == nil {
+func (p *SOLTracker) Run(ctx context.Context) {
+	if p == nil || p.chainRepo == nil || p.depositRepo == nil || p.sol == nil {
 		return
 	}
 	poll := p.poll
@@ -56,16 +56,16 @@ func (p *DepositProjector) Run(ctx context.Context) {
 	}
 }
 
-func (p *DepositProjector) tick(ctx context.Context) {
-	latest, err := p.btc.LatestHeightContext(ctx)
+func (p *SOLTracker) tick(ctx context.Context) {
+	latest, err := p.sol.LatestHeight(ctx)
 	if err != nil {
 		return
 	}
 	if err := p.handleReorgs(ctx); err != nil {
-		log.Printf("[deposit-projector-btc] handle reorgs failed chain=%s err=%v", p.chain, err)
+		log.Printf("[deposit-tracker-sol] handle reorgs failed chain=%s err=%v", p.chain, err)
 		return
 	}
-	maxBlock, ok := confirmableDepositBlock(latest, p.confirmations)
+	maxBlock, ok := solConfirmableDepositBlock(latest, p.confirmations)
 	if !ok {
 		return
 	}
@@ -75,7 +75,7 @@ func (p *DepositProjector) tick(ctx context.Context) {
 	}
 	for i := range items {
 		rec := items[i]
-		amount := amountFromString(rec.Amount)
+		amount := solAmountFromString(rec.Amount)
 		if amount.Sign() <= 0 {
 			continue
 		}
@@ -91,14 +91,14 @@ func (p *DepositProjector) tick(ctx context.Context) {
 			Amount:               amount,
 		})
 		if err == nil {
-			log.Printf("[deposit-projector-btc] confirmed deposit chain=%s tx=%s vout=%d to=%s amount=%s",
+			log.Printf("[deposit-tracker-sol] confirmed deposit chain=%s tx=%s account_index=%d to=%s amount=%s",
 				rec.Chain, rec.TxHash, rec.LogIndex, rec.ToAddress, rec.Amount)
 		}
 	}
 }
 
-func (p *DepositProjector) handleReorgs(ctx context.Context) error {
-	cur, err := p.chainRepo.GetOrCreateProjectorCursor(ctx, p.reorgCursor)
+func (p *SOLTracker) handleReorgs(ctx context.Context) error {
+	cur, err := p.chainRepo.GetOrCreateTrackerCursor(ctx, p.reorgCursor)
 	if err != nil {
 		return err
 	}
@@ -118,10 +118,10 @@ func (p *DepositProjector) handleReorgs(ctx context.Context) error {
 			maxID = notice.ID
 		}
 	}
-	return p.chainRepo.SaveProjectorCursor(ctx, p.reorgCursor, maxID)
+	return p.chainRepo.SaveTrackerCursor(ctx, p.reorgCursor, maxID)
 }
 
-func (p *DepositProjector) revertFromBlock(ctx context.Context, fromBlock uint64) error {
+func (p *SOLTracker) revertFromBlock(ctx context.Context, fromBlock uint64) error {
 	var lastID uint64
 	for {
 		items, err := p.depositRepo.ListReorgAffectedAfterID(ctx, p.chain, fromBlock, lastID, 500)
@@ -137,13 +137,13 @@ func (p *DepositProjector) revertFromBlock(ctx context.Context, fromBlock uint64
 			if err := p.depositRepo.RevertByChainRef(ctx, rec.Chain, rec.TxHash, rec.LogIndex); err != nil {
 				return err
 			}
-			log.Printf("[deposit-projector-btc] reverted deposit chain=%s tx=%s vout=%d",
+			log.Printf("[deposit-tracker-sol] reverted deposit chain=%s tx=%s account_index=%d",
 				rec.Chain, rec.TxHash, rec.LogIndex)
 		}
 	}
 }
 
-func amountFromString(v string) *big.Int {
+func solAmountFromString(v string) *big.Int {
 	out, ok := new(big.Int).SetString(v, 10)
 	if !ok {
 		return big.NewInt(0)
@@ -151,7 +151,7 @@ func amountFromString(v string) *big.Int {
 	return out
 }
 
-func confirmableDepositBlock(latest uint64, confirmations uint64) (uint64, bool) {
+func solConfirmableDepositBlock(latest uint64, confirmations uint64) (uint64, bool) {
 	if confirmations <= 1 {
 		return latest, true
 	}

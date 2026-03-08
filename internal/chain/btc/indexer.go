@@ -1,4 +1,4 @@
-package btcindex
+package btc
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	btcchain "wallet-system/internal/chain/btc"
 	chainmodel "wallet-system/internal/storage/model/chain"
 	"wallet-system/internal/storage/repo"
 
@@ -26,13 +25,13 @@ type IndexerConfig struct {
 
 type Indexer struct {
 	cfg         IndexerConfig
-	btc         *btcchain.Client
+	btc         *Client
 	repo        *repo.ChainRepo
 	addressRepo *repo.AddressRepo
 	depositRepo *repo.DepositRepo
 }
 
-func NewIndexer(chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, addressRepo *repo.AddressRepo, client *btcchain.Client, cfg IndexerConfig) *Indexer {
+func NewIndexer(chainRepo *repo.ChainRepo, depositRepo *repo.DepositRepo, addressRepo *repo.AddressRepo, client *Client, cfg IndexerConfig) *Indexer {
 	return &Indexer{
 		cfg:         cfg,
 		btc:         client,

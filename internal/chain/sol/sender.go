@@ -10,7 +10,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
-type signatureStatus struct {
+type SignatureStatus struct {
 	Slot               uint64
 	Confirmations      *uint64
 	Err                any
@@ -50,7 +50,7 @@ func (c *Client) LatestHeight(ctx context.Context) (uint64, error) {
 	return c.rpc.GetSlot(ctx, rpc.CommitmentConfirmed)
 }
 
-func (c *Client) GetSignatureStatus(ctx context.Context, signature string) (*signatureStatus, error) {
+func (c *Client) GetSignatureStatus(ctx context.Context, signature string) (*SignatureStatus, error) {
 	if err := c.ensureRPC(); err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (c *Client) GetSignatureStatus(ctx context.Context, signature string) (*sig
 		return nil, nil
 	}
 	v := resp.Value[0]
-	return &signatureStatus{
+	return &SignatureStatus{
 		Slot:               v.Slot,
 		Confirmations:      v.Confirmations,
 		Err:                v.Err,

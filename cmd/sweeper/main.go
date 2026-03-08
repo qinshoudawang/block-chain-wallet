@@ -83,6 +83,15 @@ func main() {
 
 	authSecret := []byte(helpers.Getenv("SWEEP_AUTH_SECRET", helpers.MustEnv("SIGNER_AUTH_SECRET")))
 	sweepRepo := repo.NewSweepRepo(db)
+	chainRepo := repo.NewChainRepo(db)
+	go sweep.NewEVMTracker(
+		evmProf.Chain,
+		uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)),
+		chainRepo,
+		sweepRepo,
+		cli,
+		time.Duration(helpers.ParseIntEnv("BROADCAST_CONFIRMER_POLL_SEC", 60))*time.Second,
+	).Run(ctx)
 	for _, asset := range assets {
 		cfg := baseCfg
 		cfg.TokenContract = asset
