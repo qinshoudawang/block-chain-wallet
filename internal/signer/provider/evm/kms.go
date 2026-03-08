@@ -1,27 +1,26 @@
-package provider
+package evmprovider
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"encoding/asn1"
 	"errors"
 	"math/big"
 	"strings"
 
 	"wallet-system/internal/signer/derivation"
+	rootprovider "wallet-system/internal/signer/provider"
 	"wallet-system/internal/storage/repo"
 	signpb "wallet-system/proto/signer"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	awskms "github.com/aws/aws-sdk-go-v2/service/kms"
 	awskmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
-	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-type EVMKMSSigner struct {
+type KMSSigner struct {
 	keyID      string
 	kms        *awskms.Client
 	chainID    *big.Int
@@ -35,17 +34,7 @@ type ecdsaKMSSignature struct {
 	S *big.Int
 }
 
-type pkixPublicKey struct {
-	Algorithm        pkixAlgorithmIdentifier
-	SubjectPublicKey asn1.BitString
-}
-
-type pkixAlgorithmIdentifier struct {
-	Algorithm  asn1.ObjectIdentifier
-	Parameters asn1.RawValue `asn1:"optional"`
-}
-
-func NewEVMKMSSigner(ctx context.Context, keyID string, chainID *big.Int, deriver *derivation.Deriver, addrs *repo.AddressRepo) (*EVMKMSSigner, error) {
+func NewKMSSigner(ctx context.Context, keyID string, chainID *big.Int, deriver *derivation.Deriver, addrs *repo.AddressRepo) (*KMSSigner, error) {
 	keyID = strings.TrimSpace(keyID)
 	if keyID == "" {
 		return nil, errors.New("empty EVM KMS key id")
@@ -55,17 +44,15 @@ func NewEVMKMSSigner(ctx context.Context, keyID string, chainID *big.Int, derive
 		return nil, err
 	}
 	kmsClient := awskms.NewFromConfig(cfg)
-	pubResp, err := kmsClient.GetPublicKey(ctx, &awskms.GetPublicKeyInput{
-		KeyId: &keyID,
-	})
+	pubResp, err := kmsClient.GetPublicKey(ctx, &awskms.GetPublicKeyInput{KeyId: &keyID})
 	if err != nil {
 		return nil, err
 	}
-	addr, err := evmAddressFromKMSPublicKey(pubResp.PublicKey)
+	addr, err := addressFromKMSPublicKey(pubResp.PublicKey)
 	if err != nil {
 		return nil, err
 	}
-	return &EVMKMSSigner{
+	return &KMSSigner{
 		keyID:      keyID,
 		kms:        kmsClient,
 		chainID:    chainID,
@@ -75,60 +62,35 @@ func NewEVMKMSSigner(ctx context.Context, keyID string, chainID *big.Int, derive
 	}, nil
 }
 
-func (s *EVMKMSSigner) Sign(ctx context.Context, req *signpb.SignRequest) ([]byte, error) {
+func (s *KMSSigner) Sign(ctx context.Context, req *signpb.SignRequest) ([]byte, error) {
 	if req == nil {
 		return nil, errors.New("sign request is nil")
 	}
 	if strings.EqualFold(strings.TrimSpace(req.GetCaller()), "sweeper") {
-		priv, expectedFrom, err := s.resolveSweepSigner(ctx, req)
+		priv, expectedFrom, err := resolveSweepSigner(ctx, s.deriver, s.addrs, req)
 		if err != nil {
 			return nil, err
 		}
-		return signEVMUnsignedWithKey(req.GetUnsignedTx(), s.chainID, priv, expectedFrom)
+		return signUnsignedWithKey(req.GetUnsignedTx(), s.chainID, priv, expectedFrom)
 	}
 	return s.signWithKMS(ctx, req.GetUnsignedTx())
 }
 
-func (s *EVMKMSSigner) KeyID() string {
+func (s *KMSSigner) KeyID() string {
 	if s == nil {
 		return ""
 	}
 	return s.keyID
 }
 
-func (s *EVMKMSSigner) HotAddress() string {
+func (s *KMSSigner) HotAddress() string {
 	if s == nil {
 		return ""
 	}
 	return s.hotAddress.Hex()
 }
 
-func (s *EVMKMSSigner) resolveSweepSigner(ctx context.Context, req *signpb.SignRequest) (*ecdsa.PrivateKey, string, error) {
-	if s.deriver == nil {
-		return nil, "", errors.New("evm deriver not configured")
-	}
-	if s.addrs == nil {
-		return nil, "", errors.New("address repo not configured")
-	}
-	fromAddr := strings.TrimSpace(req.GetFromAddress())
-	row, ok, err := s.addrs.GetByChainAddress(ctx, req.GetChain(), fromAddr)
-	if err != nil {
-		return nil, "", err
-	}
-	if !ok {
-		return nil, "", errors.New("sweep from_address is not a derived user address")
-	}
-	priv, derivedAddr, err := s.deriver.DeriveEVMPrivateKey(req.GetChain(), row.AddressIndex)
-	if err != nil {
-		return nil, "", err
-	}
-	if !strings.EqualFold(derivedAddr, fromAddr) {
-		return nil, "", errors.New("sweep signer address mismatch")
-	}
-	return priv, fromAddr, nil
-}
-
-func (s *EVMKMSSigner) signWithKMS(ctx context.Context, unsignedTx []byte) ([]byte, error) {
+func (s *KMSSigner) signWithKMS(ctx context.Context, unsignedTx []byte) ([]byte, error) {
 	if s == nil || s.kms == nil {
 		return nil, errors.New("evm kms signer not configured")
 	}
@@ -175,12 +137,8 @@ func (s *EVMKMSSigner) signWithKMS(ctx context.Context, unsignedTx []byte) ([]by
 	return nil, errors.New("kms signature recovery id not found")
 }
 
-func evmAddressFromKMSPublicKey(der []byte) (common.Address, error) {
-	var pkixKey pkixPublicKey
-	if _, err := asn1.Unmarshal(der, &pkixKey); err != nil {
-		return common.Address{}, err
-	}
-	pub, err := btcec.ParsePubKey(pkixKey.SubjectPublicKey.Bytes)
+func addressFromKMSPublicKey(der []byte) (common.Address, error) {
+	pub, err := rootprovider.ParseKMSSECP256K1PublicKey(der)
 	if err != nil {
 		return common.Address{}, err
 	}

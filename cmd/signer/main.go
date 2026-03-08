@@ -18,6 +18,9 @@ import (
 	"wallet-system/internal/signer/derivation"
 	"wallet-system/internal/signer/policy"
 	"wallet-system/internal/signer/provider"
+	btcprovider "wallet-system/internal/signer/provider/btc"
+	evmprovider "wallet-system/internal/signer/provider/evm"
+	solprovider "wallet-system/internal/signer/provider/sol"
 	"wallet-system/internal/storage/repo"
 	signpb "wallet-system/proto/signer"
 
@@ -153,7 +156,7 @@ func registerEVMSignerProviders(registry *provider.Registry, profiles map[string
 		}
 		var evmSigner provider.SignerProvider
 		if strings.TrimSpace(kmsKeyID) != "" {
-			kmsSigner, kmsErr := provider.NewEVMKMSSigner(context.Background(), kmsKeyID, p.ChainID, deriver, addressRepo)
+			kmsSigner, kmsErr := evmprovider.NewKMSSigner(context.Background(), kmsKeyID, p.ChainID, deriver, addressRepo)
 			if kmsErr != nil {
 				err = kmsErr
 			} else {
@@ -164,7 +167,7 @@ func registerEVMSignerProviders(registry *provider.Registry, profiles map[string
 			if strings.TrimSpace(priv) == "" {
 				log.Fatalf("ETH_HOT_WALLET_PRIV or ETH_HOT_WALLET_KMS_KEY_ID is required for chain=%s", chain)
 			}
-			evmSigner, err = provider.NewEVMSigner(priv, p.ChainID, deriver, addressRepo)
+			evmSigner, err = evmprovider.NewSigner(priv, p.ChainID, deriver, addressRepo)
 		}
 		if err != nil {
 			log.Fatalf("init evm signer failed chain=%s err=%v", chain, err)
@@ -176,8 +179,9 @@ func registerEVMSignerProviders(registry *provider.Registry, profiles map[string
 }
 
 func registerBTCSignerProvider(registry *provider.Registry, profiles map[string]config.ChainProfile) {
+	kmsKeyID := helpers.Getenv("BTC_HOT_WALLET_KMS_KEY_ID", "")
 	priv := helpers.Getenv("BTC_HOT_WALLET_PRIV", "")
-	if priv == "" {
+	if strings.TrimSpace(kmsKeyID) == "" && priv == "" {
 		return
 	}
 
@@ -189,9 +193,20 @@ func registerBTCSignerProvider(registry *provider.Registry, profiles map[string]
 		if spec.Family != helpers.FamilyBTC {
 			continue
 		}
-		btcSigner, err := provider.NewBTCSigner(priv)
+		var btcSigner provider.SignerProvider
+		if strings.TrimSpace(kmsKeyID) != "" {
+			kmsSigner, kmsErr := btcprovider.NewKMSSigner(context.Background(), kmsKeyID, chain)
+			if kmsErr != nil {
+				err = kmsErr
+			} else {
+				log.Printf("[signer] btc kms signer ready chain=%s key_id=%s address=%s", chain, kmsSigner.KeyID(), kmsSigner.HotAddress())
+				btcSigner = kmsSigner
+			}
+		} else {
+			btcSigner, err = btcprovider.NewSigner(priv)
+		}
 		if err != nil {
-			log.Fatalf("init btc local signer failed chain=%s err=%v", chain, err)
+			log.Fatalf("init btc signer failed chain=%s err=%v", chain, err)
 		}
 		if err := registry.Register(chain, btcSigner); err != nil {
 			log.Fatalf("register btc signer provider failed chain=%s err=%v", chain, err)
@@ -213,7 +228,7 @@ func registerSOLSignerProvider(registry *provider.Registry, profiles map[string]
 		if spec.Family != helpers.FamilySOL {
 			continue
 		}
-		solSigner, err := provider.NewSOLSigner(priv)
+		solSigner, err := solprovider.NewSigner(priv)
 		if err != nil {
 			log.Fatalf("init sol signer failed chain=%s err=%v", chain, err)
 		}

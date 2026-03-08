@@ -1,4 +1,4 @@
-package provider
+package evmprovider
 
 import (
 	"context"
@@ -13,59 +13,24 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 )
 
-type EVMSigner struct {
-	privKey *ecdsa.PrivateKey
-	chainID *big.Int
-	deriver *derivation.Deriver
-	addrs   *repo.AddressRepo
-}
-
-func NewEVMSigner(hexPriv string, chainID *big.Int, deriver *derivation.Deriver, addrs *repo.AddressRepo) (*EVMSigner, error) {
-	if hexPriv == "" {
-		return nil, errors.New("empty EVM private key")
-	}
-	priv, err := crypto.HexToECDSA(trim0x(hexPriv))
-	if err != nil {
-		return nil, err
-	}
-	return &EVMSigner{privKey: priv, chainID: chainID, deriver: deriver, addrs: addrs}, nil
-}
-
-func (s *EVMSigner) Sign(ctx context.Context, req *signpb.SignRequest) ([]byte, error) {
-	if req == nil {
-		return nil, errors.New("sign request is nil")
-	}
-	priv := s.privKey
-	expectedFrom := ""
-	if strings.EqualFold(strings.TrimSpace(req.GetCaller()), "sweeper") {
-		var err error
-		priv, expectedFrom, err = s.resolveSweepSigner(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return signEVMUnsignedWithKey(req.GetUnsignedTx(), s.chainID, priv, expectedFrom)
-}
-
-func (s *EVMSigner) resolveSweepSigner(ctx context.Context, req *signpb.SignRequest) (*ecdsa.PrivateKey, string, error) {
-	if s.deriver == nil {
+func resolveSweepSigner(ctx context.Context, deriver *derivation.Deriver, addrs *repo.AddressRepo, req *signpb.SignRequest) (*ecdsa.PrivateKey, string, error) {
+	if deriver == nil {
 		return nil, "", errors.New("evm deriver not configured")
 	}
-	if s.addrs == nil {
+	if addrs == nil {
 		return nil, "", errors.New("address repo not configured")
 	}
 	fromAddr := strings.TrimSpace(req.GetFromAddress())
-	row, ok, err := s.addrs.GetByChainAddress(ctx, req.GetChain(), fromAddr)
+	row, ok, err := addrs.GetByChainAddress(ctx, req.GetChain(), fromAddr)
 	if err != nil {
 		return nil, "", err
 	}
 	if !ok {
 		return nil, "", errors.New("sweep from_address is not a derived user address")
 	}
-	priv, derivedAddr, err := s.deriver.DeriveEVMPrivateKey(req.GetChain(), row.AddressIndex)
+	priv, derivedAddr, err := deriver.DeriveEVMPrivateKey(req.GetChain(), row.AddressIndex)
 	if err != nil {
 		return nil, "", err
 	}
@@ -75,7 +40,7 @@ func (s *EVMSigner) resolveSweepSigner(ctx context.Context, req *signpb.SignRequ
 	return priv, fromAddr, nil
 }
 
-func signEVMUnsignedWithKey(
+func signUnsignedWithKey(
 	unsignedTx []byte,
 	expectedChainID *big.Int,
 	priv *ecdsa.PrivateKey,
