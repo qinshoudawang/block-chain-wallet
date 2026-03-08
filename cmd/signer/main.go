@@ -215,8 +215,9 @@ func registerBTCSignerProvider(registry *provider.Registry, profiles map[string]
 }
 
 func registerSOLSignerProvider(registry *provider.Registry, profiles map[string]config.ChainProfile) {
+	kmsKeyID := helpers.Getenv("SOL_HOT_WALLET_KMS_KEY_ID", "")
 	priv := helpers.Getenv("SOL_HOT_WALLET_PRIV", "")
-	if priv == "" {
+	if strings.TrimSpace(kmsKeyID) == "" && priv == "" {
 		return
 	}
 
@@ -228,7 +229,18 @@ func registerSOLSignerProvider(registry *provider.Registry, profiles map[string]
 		if spec.Family != helpers.FamilySOL {
 			continue
 		}
-		solSigner, err := solprovider.NewSigner(priv)
+		var solSigner provider.SignerProvider
+		if strings.TrimSpace(kmsKeyID) != "" {
+			kmsSigner, kmsErr := solprovider.NewKMSSigner(context.Background(), kmsKeyID)
+			if kmsErr != nil {
+				err = kmsErr
+			} else {
+				log.Printf("[signer] sol kms signer ready chain=%s key_id=%s address=%s", chain, kmsSigner.KeyID(), kmsSigner.HotAddress())
+				solSigner = kmsSigner
+			}
+		} else {
+			solSigner, err = solprovider.NewSigner(priv)
+		}
 		if err != nil {
 			log.Fatalf("init sol signer failed chain=%s err=%v", chain, err)
 		}
