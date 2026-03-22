@@ -23,7 +23,6 @@ import (
 	"wallet-system/internal/sequence/utxoreserve"
 	storagemigrate "wallet-system/internal/storage/migrate"
 	"wallet-system/internal/storage/repo"
-	"wallet-system/internal/withdraw"
 
 	kafkago "github.com/segmentio/kafka-go"
 	"gorm.io/driver/postgres"
@@ -48,8 +47,6 @@ func main() {
 	utxoReserve := utxoreserve.NewManager(rdc.RDB, utxoReserveRepo, utxoReserveTTL)
 	withdrawRepo := repo.NewWithdrawRepo(db)
 	sweepRepo := repo.NewSweepRepo(db)
-	ledgerRepo := repo.NewLedgerRepo(db)
-	chainRepo := repo.NewChainRepo(db)
 	producer := initKafkaProducer()
 	defer producer.Close()
 	consumer := initKafkaConsumer()
@@ -57,7 +54,6 @@ func main() {
 	chainProfiles := buildChainProfiles()
 	clients, closeChainClients := buildBroadcasterChainClientRegistry(chainProfiles)
 	defer closeChainClients()
-	withdrawPoll := time.Duration(helpers.ParseIntEnv("BROADCAST_CONFIRMER_POLL_SEC", 60)) * time.Second
 
 	go broadcaster.RunConsumer(ctx, broadcaster.ConsumerDeps{
 		WithdrawRepo: withdrawRepo,
@@ -67,23 +63,6 @@ func main() {
 		Runtime:      consumer,
 	})
 	go broadcaster.RunReplayer(ctx, withdrawRepo, producer)
-	evmClient := initOptionalEVMClient()
-	if evmClient != nil {
-		defer evmClient.Close()
-		evmProf, _ := env.LoadEVMProfileFromEnv()
-		go withdraw.NewEVMTracker(evmProf.Chain, uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)), chainRepo, withdrawRepo, ledgerRepo, evmClient, withdrawPoll).Run(ctx)
-	}
-	btcClient := initOptionalBTCClient()
-	if btcClient != nil {
-		defer btcClient.Close()
-		btcProf, _, _ := env.LoadBTCProfileFromEnv()
-		go withdraw.NewBTCTracker(btcProf.Chain, helpers.ParseIntEnv("BTC_CONFIRM_THRESHOLD", 2), chainRepo, withdrawRepo, ledgerRepo, btcClient, withdrawPoll).Run(ctx)
-	}
-	solClient := initOptionalSOLClient()
-	if solClient != nil {
-		solProf, _, _ := env.LoadSOLProfileFromEnv()
-		go withdraw.NewSOLTracker(solProf.Chain, helpers.ParseIntEnv("SOL_CONFIRM_THRESHOLD", 5), chainRepo, withdrawRepo, ledgerRepo, solClient, withdrawPoll).Run(ctx)
-	}
 
 	<-ctx.Done()
 }

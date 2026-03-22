@@ -54,12 +54,13 @@ func main() {
 	producer := initKafkaProducer()
 	defer producer.Close()
 	chainProfiles := buildChainProfiles()
-	withdrawChainRegistry, closeChainClients := buildWithdrawChainClientRegistry(chainProfiles)
+	withdrawChainRegistry, trackerClients, closeChainClients := buildWithdrawChainClientRegistry(chainProfiles)
 	defer closeChainClients()
 	signerCli := initSignerClient()
 	defer signerCli.Close()
 	wsvc := initWithdrawService(rdc, chainProfiles, withdrawChainRegistry, producer, db, signerCli.Client)
 	asvc := address.NewAddressService(db, signerCli.Client)
+	startWithdrawTrackers(ctx, db, wsvc, trackerClients)
 	server := initHTTPServer(wsvc, asvc)
 	withdrawGS, withdrawLis := initWithdrawGRPCServer(wsvc)
 	defer withdrawLis.Close()
@@ -216,8 +217,15 @@ func buildChainProfiles() map[string]config.ChainProfile {
 	return profiles
 }
 
-func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (*chainclient.Registry, func()) {
+type withdrawTrackerClients struct {
+	evm *evmchain.Client
+	btc *btcchain.Client
+	sol *solchain.Client
+}
+
+func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (*chainclient.Registry, withdrawTrackerClients, func()) {
 	registry := chainclient.NewRegistry()
+	trackerClients := withdrawTrackerClients{}
 	var evmClient *evmchain.Client
 	var btcClient *btcchain.Client
 	var solClient *solchain.Client
@@ -229,12 +237,14 @@ func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (
 		if spec.Family == helpers.FamilyEVM {
 			if evmClient == nil {
 				evmClient = initEVMClient()
+				trackerClients.evm = evmClient
 			}
 			registry.RegisterEVM(chainclient.EVMRegistration{Client: evmClient})
 		}
 		if spec.Family == helpers.FamilyBTC {
 			if btcClient == nil {
 				btcClient = initBTCClient()
+				trackerClients.btc = btcClient
 			}
 			registry.RegisterBTC(chainclient.BTCRegistration{
 				Client: btcClient,
@@ -243,19 +253,58 @@ func buildWithdrawChainClientRegistry(profiles map[string]config.ChainProfile) (
 		if spec.Family == helpers.FamilySOL {
 			if solClient == nil {
 				solClient = initSOLClient()
+				trackerClients.sol = solClient
 			}
 			registry.RegisterSOL(chainclient.SOLRegistration{
 				Client: solClient,
 			})
 		}
 	}
-	return registry, func() {
+	return registry, trackerClients, func() {
 		if evmClient != nil {
 			evmClient.Close()
 		}
 		if btcClient != nil {
 			btcClient.Close()
 		}
+	}
+}
+
+func startWithdrawTrackers(ctx context.Context, db *gorm.DB, wsvc *withdraw.Service, clients withdrawTrackerClients) {
+	if db == nil || wsvc == nil {
+		return
+	}
+	chainRepo := repo.NewChainRepo(db)
+	withdrawRepo := repo.NewWithdrawRepo(db)
+	ledgerRepo := repo.NewLedgerRepo(db)
+	withdrawPoll := time.Duration(helpers.ParseIntEnv("BROADCAST_CONFIRMER_POLL_SEC", 60)) * time.Second
+
+	if clients.evm != nil {
+		evmProf, _ := env.LoadEVMProfileFromEnv()
+		go withdraw.NewEVMTracker(
+			evmProf.Chain,
+			uint64(helpers.ParseIntEnv("DEPOSIT_EVM_CONFIRMATIONS", 6)),
+			chainRepo,
+			withdrawRepo,
+			ledgerRepo,
+			clients.evm,
+			withdrawPoll,
+			withdraw.EVMTrackerOptions{
+				RBFSubmitter:     wsvc,
+				RBFMinInterval:   time.Duration(helpers.ParseIntEnv("WITHDRAW_EVM_RBF_MIN_INTERVAL_SEC", 120)) * time.Second,
+				RBFAfterNotFound: time.Duration(helpers.ParseIntEnv("WITHDRAW_EVM_RBF_AFTER_NOT_FOUND_SEC", 60)) * time.Second,
+				RBFAfterPending:  time.Duration(helpers.ParseIntEnv("WITHDRAW_EVM_RBF_AFTER_PENDING_SEC", 300)) * time.Second,
+				MaxRBFAttempts:   helpers.ParseIntEnv("WITHDRAW_EVM_RBF_MAX_ATTEMPTS", 3),
+			},
+		).Run(ctx)
+	}
+	if clients.btc != nil {
+		btcProf, _, _ := env.LoadBTCProfileFromEnv()
+		go withdraw.NewBTCTracker(btcProf.Chain, helpers.ParseIntEnv("BTC_CONFIRM_THRESHOLD", 2), chainRepo, withdrawRepo, ledgerRepo, clients.btc, withdrawPoll).Run(ctx)
+	}
+	if clients.sol != nil {
+		solProf, _, _ := env.LoadSOLProfileFromEnv()
+		go withdraw.NewSOLTracker(solProf.Chain, helpers.ParseIntEnv("SOL_CONFIRM_THRESHOLD", 5), chainRepo, withdrawRepo, ledgerRepo, clients.sol, withdrawPoll).Run(ctx)
 	}
 }
 

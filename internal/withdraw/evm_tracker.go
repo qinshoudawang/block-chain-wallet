@@ -21,26 +21,64 @@ import (
 var erc20TransferTopic = common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
 
 type EVMTracker struct {
-	chainRepo    *repo.ChainRepo
-	withdrawRepo *repo.WithdrawRepo
-	ledgerRepo   *repo.LedgerRepo
-	evm          *evmchain.Client
-	chain        string
-	confirmDepth uint64
-	poll         time.Duration
-	reorgCursor  string
+	chainRepo        *repo.ChainRepo
+	withdrawRepo     *repo.WithdrawRepo
+	ledgerRepo       *repo.LedgerRepo
+	evm              *evmchain.Client
+	rbfSubmitter     evmRBFSubmitter
+	chain            string
+	confirmDepth     uint64
+	poll             time.Duration
+	reorgCursor      string
+	rbfAfterNotFound time.Duration
+	rbfAfterPending  time.Duration
+	rbfMinInterval   time.Duration
+	maxRBFAttempts   int
 }
 
-func NewEVMTracker(chain string, confirmDepth uint64, chainRepo *repo.ChainRepo, withdrawRepo *repo.WithdrawRepo, ledgerRepo *repo.LedgerRepo, evm *evmchain.Client, poll time.Duration) *EVMTracker {
+type evmRBFSubmitter interface {
+	CreateAndSignRBFWithdraw(ctx context.Context, withdrawID string, oldTxHash string) (*SubmitRBFResult, error)
+}
+
+type EVMTrackerOptions struct {
+	RBFSubmitter     evmRBFSubmitter
+	RBFMinInterval   time.Duration
+	RBFAfterPending  time.Duration
+	RBFAfterNotFound time.Duration
+	MaxRBFAttempts   int
+}
+
+func NewEVMTracker(chain string, confirmDepth uint64, chainRepo *repo.ChainRepo, withdrawRepo *repo.WithdrawRepo, ledgerRepo *repo.LedgerRepo, evm *evmchain.Client, poll time.Duration, opts EVMTrackerOptions) *EVMTracker {
+	rbfMinInterval := opts.RBFMinInterval
+	if rbfMinInterval <= 0 {
+		rbfMinInterval = 2 * time.Minute
+	}
+	rbfAfterPending := opts.RBFAfterPending
+	if rbfAfterPending <= 0 {
+		rbfAfterPending = 5 * time.Minute
+	}
+	rbfAfterNotFound := opts.RBFAfterNotFound
+	if rbfAfterNotFound <= 0 {
+		rbfAfterNotFound = time.Minute
+	}
+	maxRBFAttempts := opts.MaxRBFAttempts
+	if maxRBFAttempts <= 0 {
+		maxRBFAttempts = 3
+	}
 	return &EVMTracker{
-		chainRepo:    chainRepo,
-		withdrawRepo: withdrawRepo,
-		ledgerRepo:   ledgerRepo,
-		evm:          evm,
-		chain:        strings.ToLower(strings.TrimSpace(chain)),
-		confirmDepth: confirmDepth,
-		poll:         poll,
-		reorgCursor:  "withdraw-reorg-tracker:" + strings.ToLower(strings.TrimSpace(chain)),
+		chainRepo:        chainRepo,
+		withdrawRepo:     withdrawRepo,
+		ledgerRepo:       ledgerRepo,
+		evm:              evm,
+		rbfSubmitter:     opts.RBFSubmitter,
+		chain:            strings.ToLower(strings.TrimSpace(chain)),
+		confirmDepth:     confirmDepth,
+		poll:             poll,
+		reorgCursor:      "withdraw-reorg-tracker:" + strings.ToLower(strings.TrimSpace(chain)),
+		rbfAfterNotFound: rbfAfterNotFound,
+		rbfAfterPending:  rbfAfterPending,
+		rbfMinInterval:   rbfMinInterval,
+		maxRBFAttempts:   maxRBFAttempts,
 	}
 }
 
@@ -142,6 +180,9 @@ func (w *EVMTracker) reconcileOrder(ctx context.Context, rec *withdrawmodel.With
 	tx, _, err := w.evm.TransactionByHash(ctx, txHash)
 	if err != nil {
 		if errors.Is(err, ethereum.NotFound) {
+			if !allowRevert {
+				return w.maybeTriggerRBF(ctx, rec, "not_found", w.rbfAfterNotFound)
+			}
 			if allowRevert {
 				_, err = w.withdrawRepo.RevertConfirmationWithSettlement(ctx, w.ledgerRepo, rec.WithdrawID)
 			}
@@ -152,6 +193,9 @@ func (w *EVMTracker) reconcileOrder(ctx context.Context, rec *withdrawmodel.With
 	receipt, err := w.evm.TransactionReceipt(ctx, txHash)
 	if err != nil {
 		if errors.Is(err, ethereum.NotFound) {
+			if !allowRevert {
+				return w.maybeTriggerRBF(ctx, rec, "pending", w.rbfAfterPending)
+			}
 			if allowRevert {
 				_, err = w.withdrawRepo.RevertConfirmationWithSettlement(ctx, w.ledgerRepo, rec.WithdrawID)
 			}
@@ -160,6 +204,9 @@ func (w *EVMTracker) reconcileOrder(ctx context.Context, rec *withdrawmodel.With
 		return err
 	}
 	if receipt == nil || receipt.BlockNumber == nil || receipt.BlockNumber.Uint64() > finalized {
+		if !allowRevert && receipt != nil && receipt.BlockNumber == nil {
+			return w.maybeTriggerRBF(ctx, rec, "pending", w.rbfAfterPending)
+		}
 		if allowRevert {
 			_, err = w.withdrawRepo.RevertConfirmationWithSettlement(ctx, w.ledgerRepo, rec.WithdrawID)
 		}
@@ -209,6 +256,48 @@ func (w *EVMTracker) reconcileOrder(ctx context.Context, rec *withdrawmodel.With
 		txEvent.FeeAmount,
 	)
 	return err
+}
+
+func (w *EVMTracker) maybeTriggerRBF(ctx context.Context, rec *withdrawmodel.WithdrawOrder, reason string, threshold time.Duration) error {
+	if w == nil || rec == nil || w.rbfSubmitter == nil || w.withdrawRepo == nil {
+		return nil
+	}
+	if strings.TrimSpace(rec.TokenContractAddress) != "" {
+		return nil
+	}
+	if w.maxRBFAttempts > 0 && rec.RBFCount >= w.maxRBFAttempts {
+		return nil
+	}
+	age := time.Since(broadcastTime(rec))
+	if threshold > 0 && age < threshold {
+		return nil
+	}
+	ok, err := w.withdrawRepo.StartRBFAttempt(ctx, rec.WithdrawID, rec.TxHash, w.rbfMinInterval)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	log.Printf("[evm-withdraw-tracker] auto rbf scheduled chain=%s withdraw_id=%s tx=%s reason=%s age=%s", w.chain, rec.WithdrawID, rec.TxHash, reason, age.Truncate(time.Second))
+	_, err = w.rbfSubmitter.CreateAndSignRBFWithdraw(ctx, rec.WithdrawID, rec.TxHash)
+	if err != nil {
+		log.Printf("[evm-withdraw-tracker] auto rbf failed chain=%s withdraw_id=%s tx=%s err=%v", w.chain, rec.WithdrawID, rec.TxHash, err)
+		return err
+	}
+	return nil
+}
+
+func broadcastTime(rec *withdrawmodel.WithdrawOrder) time.Time {
+	if rec != nil {
+		if rec.BroadcastedAt != nil && !rec.BroadcastedAt.IsZero() {
+			return *rec.BroadcastedAt
+		}
+		if !rec.UpdatedAt.IsZero() {
+			return rec.UpdatedAt
+		}
+	}
+	return time.Now()
 }
 
 func finalizedHeight(ctx context.Context, evm *evmchain.Client, confirmations uint64) (uint64, bool) {

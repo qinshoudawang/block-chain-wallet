@@ -34,6 +34,9 @@ type WithdrawOrder struct {
 
 	NetworkFeeAmount  string `gorm:"type:varchar(80)"`
 	ActualSpentAmount string `gorm:"type:varchar(80)"`
+	BroadcastedAt     *time.Time
+	RBFCount          int `gorm:"not null;default:0"`
+	LastRBFAttemptAt  *time.Time
 
 	Status      WithdrawStatus `gorm:"type:varchar(24);not null;index:idx_status_next_retry,priority:1;index:idx_status_updated,priority:1"`
 	RetryCount  int            `gorm:"not null;default:0"`

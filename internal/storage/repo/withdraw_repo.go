@@ -215,15 +215,17 @@ func (r *WithdrawRepo) NextSequenceFloor(ctx context.Context, chain, fromAddr st
 // MarkBroadcasted: broadcaster 广播成功后调用（幂等）
 // 只允许 SIGNED/BROADCASTING -> BROADCASTED
 func (r *WithdrawRepo) MarkBroadcasted(ctx context.Context, withdrawID, txHash string) (bool, error) {
+	now := time.Now()
 	res := r.db.WithContext(ctx).Model(&withdrawmodel.WithdrawOrder{}).
 		Where("withdraw_id = ? AND status IN ?", withdrawID, []withdrawmodel.WithdrawStatus{
 			withdrawmodel.StatusSIGNED, withdrawmodel.StatusBROADCASTING, withdrawmodel.StatusBROADCASTED,
 		}).
 		Updates(map[string]any{
-			"status":        withdrawmodel.StatusBROADCASTED,
-			"tx_hash":       txHash,
-			"last_error":    "",
-			"next_retry_at": nil,
+			"status":         withdrawmodel.StatusBROADCASTED,
+			"tx_hash":        txHash,
+			"broadcasted_at": now,
+			"last_error":     "",
+			"next_retry_at":  nil,
 		})
 	return res.RowsAffected > 0, res.Error
 }
@@ -637,6 +639,24 @@ func (r *WithdrawRepo) SaveRBFSignedPayload(
 			"signed_payload":          newSignedPayload,
 			"signed_payload_encoding": encoding,
 			"updated_at":              time.Now(),
+		})
+	return res.RowsAffected > 0, res.Error
+}
+
+func (r *WithdrawRepo) StartRBFAttempt(ctx context.Context, withdrawID string, prevTxHash string, minInterval time.Duration) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("withdraw repo not configured")
+	}
+	now := time.Now()
+	cutoff := now.Add(-minInterval)
+	res := r.db.WithContext(ctx).Model(&withdrawmodel.WithdrawOrder{}).
+		Where("withdraw_id = ? AND tx_hash = ? AND status = ?", strings.TrimSpace(withdrawID), strings.TrimSpace(prevTxHash), withdrawmodel.StatusBROADCASTED).
+		Where("(last_rbf_attempt_at IS NULL OR last_rbf_attempt_at <= ?)", cutoff).
+		Updates(map[string]any{
+			"rbf_count":           gorm.Expr("rbf_count + 1"),
+			"last_rbf_attempt_at": now,
+			"last_error":          "",
+			"updated_at":          now,
 		})
 	return res.RowsAffected > 0, res.Error
 }
