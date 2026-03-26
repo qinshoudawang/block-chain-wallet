@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func NewRouter(wsvc handler.WithdrawService, asvc handler.AddressService) *gin.Engine {
+func NewRouter(wsvc handler.WithdrawService, asvc handler.AddressService, cfg RouterConfig) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
@@ -14,6 +14,9 @@ func NewRouter(wsvc handler.WithdrawService, asvc handler.AddressService) *gin.E
 	ah := handler.NewAddressHandler(asvc)
 
 	v1 := r.Group("/v1")
+	if cfg.Auth != nil {
+		v1.Use(cfg.Auth.Handler())
+	}
 	{
 		v1.POST("/withdraw", wh.Withdraw)
 		v1.POST("/address", ah.CreateAddress)

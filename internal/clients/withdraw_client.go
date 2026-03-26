@@ -1,6 +1,8 @@
 package clients
 
 import (
+	"fmt"
+
 	withdrawpb "wallet-system/proto/withdraw"
 
 	"google.golang.org/grpc"
@@ -20,7 +22,18 @@ func (c *WithdrawClient) Close() error {
 }
 
 func NewWithdrawClient(addr string) (*WithdrawClient, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	cfg := loadOIDCClientCredentialsConfig("WITHDRAW")
+	tokenSource, err := newBearerTokenSource(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("init withdraw oidc auth failed: %w", err)
+	}
+
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	if tokenSource != nil {
+		opts = append(opts, grpc.WithUnaryInterceptor(tokenSource.unaryClientInterceptor()))
+	}
+
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, err
 	}

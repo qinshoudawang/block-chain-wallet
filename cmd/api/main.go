@@ -14,6 +14,7 @@ import (
 
 	"wallet-system/internal/address"
 	"wallet-system/internal/api"
+	apimiddleware "wallet-system/internal/api/middleware"
 	authpkg "wallet-system/internal/auth"
 	btcchain "wallet-system/internal/chain/btc"
 	evmchain "wallet-system/internal/chain/evm"
@@ -60,9 +61,10 @@ func main() {
 	defer signerCli.Close()
 	wsvc := initWithdrawService(rdc, chainProfiles, withdrawChainRegistry, producer, db, signerCli.Client)
 	asvc := address.NewAddressService(db, signerCli.Client)
+	authMW := initAPIAuthMiddleware()
 	startWithdrawTrackers(ctx, db, wsvc, trackerClients)
-	server := initHTTPServer(wsvc, asvc)
-	withdrawGS, withdrawLis := initWithdrawGRPCServer(wsvc)
+	server := initHTTPServer(wsvc, asvc, authMW)
+	withdrawGS, withdrawLis := initWithdrawGRPCServer(wsvc, authMW)
 	defer withdrawLis.Close()
 
 	if err := runServers(ctx, server, withdrawGS, withdrawLis); err != nil {
@@ -308,16 +310,25 @@ func startWithdrawTrackers(ctx context.Context, db *gorm.DB, wsvc *withdraw.Serv
 	}
 }
 
-func initHTTPServer(wsvc *withdraw.Service, asvc *address.AddressService) *http.Server {
+func initAPIAuthMiddleware() *apimiddleware.JWTAuthMiddleware {
+	authMW, err := apimiddleware.NewJWTAuthMiddlewareFromEnv()
+	if err != nil {
+		log.Fatalf("init api auth middleware failed: %v", err)
+	}
+	return authMW
+}
+
+func initHTTPServer(wsvc *withdraw.Service, asvc *address.AddressService, authMW *apimiddleware.JWTAuthMiddleware) *http.Server {
 	addr := helpers.Getenv("API_ADDR", "127.0.0.1:8080")
 	return &http.Server{
 		Addr:    addr,
-		Handler: api.NewRouter(wsvc, asvc),
+		Handler: api.NewRouter(wsvc, asvc, api.RouterConfig{Auth: authMW}),
 	}
 }
 
 func initWithdrawGRPCServer(
 	wsvc *withdraw.Service,
+	authMW *apimiddleware.JWTAuthMiddleware,
 ) (*grpc.Server, net.Listener) {
 	addr := helpers.Getenv("WITHDRAW_GRPC_ADDR", "127.0.0.1:9002")
 	lis, err := net.Listen("tcp", addr)
@@ -325,7 +336,8 @@ func initWithdrawGRPCServer(
 		log.Fatalf("withdraw grpc listen failed: %v", err)
 	}
 	gs := grpc.NewServer(
-		grpc.ConnectionTimeout(3 * time.Second),
+		grpc.ConnectionTimeout(3*time.Second),
+		grpc.UnaryInterceptor(authMW.UnaryServerInterceptor()),
 	)
 	withdrawpb.RegisterWithdrawServiceServer(
 		gs,

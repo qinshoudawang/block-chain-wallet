@@ -1,6 +1,8 @@
 package clients
 
 import (
+	"fmt"
+
 	signpb "wallet-system/proto/signer"
 
 	"google.golang.org/grpc"
@@ -20,7 +22,18 @@ func (c *SignerClient) Close() error {
 }
 
 func NewSignerClient(addr string) (*SignerClient, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	cfg := loadOIDCClientCredentialsConfig("SIGNER")
+	tokenSource, err := newBearerTokenSource(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("init signer oidc auth failed: %w", err)
+	}
+
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	if tokenSource != nil {
+		opts = append(opts, grpc.WithUnaryInterceptor(tokenSource.unaryClientInterceptor()))
+	}
+
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, err
 	}
